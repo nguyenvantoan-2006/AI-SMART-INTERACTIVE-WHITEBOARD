@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+python-multipart
+google-generativeai
+pydantic
+websockets
+Pillow
+python-dotenv

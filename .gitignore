@@ -1,0 +1,70 @@
+# ============================================
+# BẢO MẬT — KHÔNG BAO GIỜ COMMIT CÁC FILE NÀY
+# ============================================
+
+# API Keys & Secrets
+.env
+.env.local
+.env.production
+.env.*
+!.env.example
+secrets.json
+config.secret.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Debug images (chứa dữ liệu người dùng)
+debug_received_image.jpg
+debug_preprocessed.jpg
+test.jpg
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+
+# Dependencies & Node
+node_modules/
+**/node_modules/
+package-lock.json
+
+# Dataset & Mô hình nghiên cứu / thử nghiệm (không thuộc ứng dụng chính)
+data/
+ai_modules/
+requirements_ai.txt
+
+# Tài liệu học tập, báo cáo & file văn phòng (KHÔNG đẩy lên GitHub)
+AI Eng/
+Word/
+Templates for Capstone Project/
+*.docx
+*.doc
+*.pptx
+*.ppt
+*.xlsx
+*.xls
+*.pdf
+
+# Backup & Temp files
+*.bak
+*_backup.*
+~$*
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db

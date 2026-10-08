@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Bảng Trắng Thông Minh AI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css?v=20261008_flower">
+    <style>
+        /* Bố cục bung hoa 7 cánh tròn đều 360 độ quanh nút chính */
+        .floating-menu {
+            position: fixed !important;
+            bottom: 120px !important;
+            right: 90px !important;
+        }
+        #fab-draw     { --tx: 0px !important;   --ty: -72px !important; }
+        #fab-beautify { --tx: 56px !important;  --ty: -45px !important; }
+        #fab-analyze  { --tx: 70px !important;  --ty: 16px !important;  }
+        #fab-lasso    { --tx: 31px !important;  --ty: 65px !important;  }
+        #fab-erase    { --tx: -31px !important; --ty: 65px !important;  }
+        #fab-quiz     { --tx: -70px !important; --ty: 16px !important;  }
+        #fab-nlp      { --tx: -56px !important; --ty: -45px !important; }
+        .fab-item:nth-child(1) { --tx: 0px !important;   --ty: -72px !important; transition-delay: 0.00s; }
+        .fab-item:nth-child(2) { --tx: 56px !important;  --ty: -45px !important; transition-delay: 0.03s; }
+        .fab-item:nth-child(3) { --tx: 70px !important;  --ty: 16px !important;  transition-delay: 0.06s; }
+        .fab-item:nth-child(4) { --tx: 31px !important;  --ty: 65px !important;  transition-delay: 0.09s; }
+        .fab-item:nth-child(5) { --tx: -31px !important; --ty: 65px !important;  transition-delay: 0.12s; }
+        .fab-item:nth-child(6) { --tx: -70px !important; --ty: 16px !important;  transition-delay: 0.15s; }
+        .fab-item:nth-child(7) { --tx: -56px !important; --ty: -45px !important; transition-delay: 0.18s; }
+    </style>
+</head>
+<body>
+    <div class="app-layout" id="app-layout">
+        <!-- Main Workspace (Hỗ trợ chia đôi 60:40 hoặc Full 100% Bảng Đen trên Smart TV) -->
+        <div class="main-workspace" id="main-workspace">
+            <!-- Canvas Section (Bảng đen viết tay) -->
+            <div class="canvas-section" id="canvas-section">
+                <canvas id="whiteboard-canvas"></canvas>
+
+                <!-- Req #1: Floating FAB (+) — viewport clamped, responsive -->
+                <div id="floating-menu" class="floating-menu">
+                    <div id="floating-menu-items" class="floating-menu-items">
+                        <button id="fab-draw"     class="fab-item active" data-i18n-title="pen"><i class="fas fa-pen"></i></button>
+                        <button id="fab-beautify" class="fab-item"        data-i18n-title="beautify"><i class="fas fa-magic"></i></button>
+                        <button id="fab-analyze"  class="fab-item"        data-i18n-title="analyze"><i class="fas fa-bolt"></i></button>
+                        <button id="fab-lasso"    class="fab-item"        data-i18n-title="lasso"><i class="fas fa-object-group"></i></button>
+                        <button id="fab-erase"    class="fab-item"        data-i18n-title="erase"><i class="fas fa-eraser"></i></button>
+                        <button id="fab-quiz"     class="fab-item"        data-i18n-title="quiz"><i class="fas fa-flask"></i></button>
+                        <button id="fab-nlp"      class="fab-item"        data-i18n-title="nlp"><i class="fas fa-brain"></i></button>
+                    </div>
+                    <button id="floating-main-btn" class="floating-main-btn" data-i18n-title="quickMenu" title="Menu công cụ nhanh">
+                        <i class="fas fa-plus"></i>
+                    </button>
+                </div>
+
+                <div id="loading-overlay" class="loading-overlay hidden">
+                    <div class="spinner"></div>
+                    <span id="loading-text">AI đang nhận dạng...</span>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Voice Recorder Popup -->
+        <div id="voice-recorder-popup" class="voice-recorder-popup hidden">
+            <div class="vr-action-btn" id="vr-btn-delete" title="Xóa"><i class="fas fa-trash"></i></div>
+            <div class="vr-center">
+                <div class="vr-waves">
+                    <div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div>
+                </div>
+                <span id="vr-time" class="vr-time">00:00</span>
+            </div>
+            <div class="vr-action-btn primary" id="vr-btn-send" title="Chèn chữ"><i class="fas fa-paper-plane"></i></div>
+        </div>
+
+        <audio id="tts-player" style="display:none"></audio>
+
+        <!-- THANH CÔNG CỤ ĐÁY ĐƠN NHẤT (UNIFIED BOTTOM BAR) — Gộp Quản lý trang + Công cụ vẽ + AI -->
+        <div class="sidebar unified-bottom-bar" id="bottom-toolbar">
+            <!-- Cụm 1: Quản lý trang gộp siêu gọn -->
+            <div class="sidebar-section page-nav-unified-section" id="page-nav-bar">
+                <button class="tool-btn page-nav-mini-btn" id="btn-page-prev" data-i18n-title="previous" title="Trang trước" disabled>
+                    <i class="fas fa-chevron-left"></i>
+                </button>
+                <div class="page-tabs-wrap mini-tabs-wrap">
+                    <div class="page-tabs-strip" id="page-tabs-strip">
+                        <!-- Dynamic page tabs injected by page_manager.js -->
+                    </div>
+                </div>
+                <span class="page-counter-badge mini-counter-badge" id="page-counter">1/1</span>
+                <button class="tool-btn page-add-mini-btn" id="btn-page-add" data-i18n-title="addPage" title="Thêm trang">
+                    <i class="fas fa-plus"></i>
+                </button>
+                <button class="tool-btn page-del-mini-btn" id="btn-page-delete" data-i18n-title="deletePage" title="Xóa trang">
+                    <i class="fas fa-trash-alt"></i>
+                </button>
+                <button class="tool-btn page-nav-mini-btn" id="btn-page-next" data-i18n-title="next" title="Trang sau" disabled>
+                    <i class="fas fa-chevron-right"></i>
+                </button>
+            </div>
+
+            <div class="sidebar-divider"></div>
+
+            <!-- Cụm 2: Hoàn tác / Làm lại -->
+            <div class="sidebar-section">
+                <button class="tool-btn" id="btn-undo" data-i18n-title="undo" title="Hoàn tác"><i class="fas fa-undo"></i></button>
+                <button class="tool-btn" id="btn-redo" data-i18n-title="redo" title="Làm lại"><i class="fas fa-redo"></i></button>
+            </div>
+
+            <div class="sidebar-divider"></div>
+
+            <!-- Cụm 3: Bộ công cụ cốt lõi (Bút vẽ, Tẩy, Khoanh vùng Lasso, Nhận dạng AI, Xóa bảng) -->
+            <div class="sidebar-section toolbar-tools-group">
+                <button class="tool-btn active" id="btn-tool-draw" data-i18n-title="pen" title="Bút vẽ"><i class="fas fa-pen"></i></button>
+                <button class="tool-btn" id="btn-sidebar-erase" data-i18n-title="erase" title="Tẩy"><i class="fas fa-eraser"></i></button>
+                <button class="tool-btn" id="btn-tool-lasso" data-i18n-title="lasso" title="Khoanh vùng nhận dạng AI"><i class="fas fa-object-group"></i></button>
+                <button class="tool-btn primary-action-btn" id="btn-sidebar-ocr" data-i18n-title="aiRecognition">
+                    <i class="fas fa-magic"></i>
+                    <span class="btn-label" data-i18n="aiRecognition">Nhận dạng AI</span>
+                </button>
+                <button class="tool-btn danger" id="btn-clear" data-i18n-title="clear" title="Xóa tất cả"><i class="fas fa-trash"></i></button>
+            </div>
+
+            <div class="sidebar-divider"></div>
+
+            <!-- Cụm 4: Màu sắc & Cỡ nét -->
+            <div class="sidebar-section colors-section">
+                <button class="color-btn active" data-color="#ffffff" style="background:#ffffff" title="Trắng"></button>
+                <button class="color-btn" data-color="#ef4444" style="background:#ef4444" title="Đỏ"></button>
+                <button class="color-btn" data-color="#10b981" style="background:#10b981" title="Xanh lá"></button>
+                <button class="color-btn" data-color="#3b82f6" style="background:#3b82f6" title="Xanh dương"></button>
+                <button class="color-btn" data-color="#f59e0b" style="background:#f59e0b" title="Vàng"></button>
+            </div>
+
+            <div class="sidebar-section brush-section">
+                <input type="range" id="brush-size" min="1" max="20" value="3" class="brush-slider" data-i18n-title="brushSize" title="Cỡ nét">
+            </div>
+
+            <div class="sidebar-divider"></div>
+
+            <!-- Cụm 5: Giọng nói -->
+            <div class="sidebar-section">
+                <button class="tool-btn" id="btn-mic" data-i18n-title="mic" title="Giọng nói"><i class="fas fa-microphone"></i></button>
+                <button class="tool-btn" id="fab-tts" data-i18n-title="tts" title="Đọc văn bản"><i class="fas fa-headphones"></i></button>
+            </div>
+
+            <div class="sidebar-divider"></div>
+
+            <!-- Cụm 6: Tiện ích AI, Ngôn ngữ, Fullscreen (Góc phải) -->
+            <div class="sidebar-section modules-group" style="margin-left: auto;">
+                <button class="tool-btn quiz-sidebar-btn" id="btn-quiz-sidebar" data-i18n-title="quiz">
+                    <i class="fas fa-flask"></i>
+                    <span class="quiz-btn-label" data-i18n="quiz">Quiz AI</span>
+                </button>
+                <button class="tool-btn nlp-sidebar-btn" id="btn-nlp-sidebar" data-i18n-title="nlp">
+                    <i class="fas fa-brain"></i>
+                    <span class="quiz-btn-label" data-i18n="nlp">Giải toán</span>
+                </button>
+
+                <!-- Ngôn ngữ dropdown -->
+                <div class="lang-dropdown-wrap" id="lang-dropdown-wrap">
+                    <button class="lang-dropdown-btn" id="lang-dropdown-btn" title="Chọn ngôn ngữ / Select Language">
+                        <span id="current-lang-flag">🇻🇳</span>
+                        <span id="current-lang-text">VN</span>
+                        <i class="fas fa-chevron-down" style="font-size:0.6rem; margin-left:2px;"></i>
+                    </button>
+                    <div class="lang-dropdown-list hidden" id="lang-dropdown-list">
+                        <button class="lang-dropdown-item active" data-lang="vi">
+                            <span>🇻🇳</span> <span>Tiếng Việt</span>
+                        </button>
+                        <button class="lang-dropdown-item" data-lang="en">
+                            <span>🇬🇧</span> <span>English</span>
+                        </button>
+                    </div>
+                </div>
+
+                <button class="tool-btn" id="btn-fullscreen-sidebar" data-i18n-title="fullscreen" title="Toàn màn hình"><i class="fas fa-expand"></i></button>
+            </div>
+        </div>
+    </div>
+
+    <!-- NLP Modal -->
+    <div id="nlp-modal" class="nlp-modal hidden">
+        <div class="nlp-backdrop" id="nlp-backdrop"></div>
+        <div class="nlp-container">
+            <div id="nlp-input-screen" class="nlp-screen">
+                <div class="nlp-header">
+                    <div class="nlp-icon">🧪</div>
+                    <div>
+                        <h2 class="nlp-title">Giải toán Hóa từ văn bản</h2>
+                        <p class="nlp-subtitle">Mô tả bài toán bằng ngôn ngữ tự nhiên — AI sẽ bóc tách, tính toán và hiển thị kết quả</p>
+                    </div>
+                    <button class="nlp-close-btn" id="nlp-close-input" title="Đóng"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="nlp-examples">
+                    <span class="nlp-ex-label">Ví dụ nhanh:</span>
+                    <button class="nlp-ex-btn" onclick="nlpFillExample(0)">CO₂ + NaOH</button>
+                    <button class="nlp-ex-btn" onclick="nlpFillExample(1)">Fe + HNO₃</button>
+                    <button class="nlp-ex-btn" onclick="nlpFillExample(2)">H₂O₂ phân hủy</button>
+                    <button class="nlp-ex-btn" onclick="nlpFillExample(3)">Tổng hợp NH₃</button>
+                </div>
+                <div class="nlp-textarea-wrap">
+                    <textarea id="nlp-text-input" class="nlp-textarea"
+                        placeholder="Nhập hoặc nhấn nút Micro để đọc đề bài hóa học...
+
+Ví dụ:
+• Hòa tan 4.48 lít CO₂ (0°C, 1atm) vào 300ml dung dịch NaOH 1M. Tính khối lượng muối tạo thành.
+• Nêu các tính chất hóa học và phản ứng của bazơ."></textarea>
+                    <button type="button" id="nlp-textarea-mic-btn" class="nlp-inner-mic-btn" onclick="toggleNlpVoiceInput()" title="Bật micro">
+                        <i class="fas fa-microphone"></i>
+                    </button>
+                </div>
+                <div id="nlp-voice-status" class="nlp-voice-status hidden">
+                    <span class="nlp-voice-dot"></span>
+                    <span id="nlp-voice-status-text">Đang lắng nghe giáo viên nói...</span>
+                </div>
+                <div class="nlp-actions">
+                    <button id="nlp-parse-btn" class="nlp-btn-primary" onclick="nlpSubmitText()">
+                        <i class="fas fa-brain"></i> Phân tích và Giải
+                    </button>
+                    <button type="button" id="nlp-mic-btn" class="nlp-btn-voice" onclick="toggleNlpVoiceInput()">
+                        <i class="fas fa-microphone"></i> <span id="nlp-mic-btn-text">Đọc bằng giọng nói (Mic)</span>
+                    </button>
+                    <button type="button" id="nlp-speak-preview-btn" class="nlp-btn-tts" onclick="nlpSpeakTextPreview()">
+                        <i class="fas fa-volume-up"></i> <span>Đọc lại</span>
+                    </button>
+                    <button class="nlp-btn-ghost" id="nlp-cancel-input" onclick="nlpCloseModal()">
+                        <i class="fas fa-times"></i> Hủy
+                    </button>
+                </div>
+            </div>
+            <div id="nlp-loading-screen" class="nlp-screen hidden">
+                <div class="nlp-loader-wrap">
+                    <div class="nlp-spinner-ring"></div><div class="nlp-spinner-ring"></div><div class="nlp-spinner-ring"></div>
+                </div>
+                <p class="nlp-loading-text">🧠 AI đang phân tích bài toán...</p>
+                <p class="nlp-loading-sub" id="nlp-loading-log">Bóc tách thực thể hóa học...</p>
+            </div>
+            <div id="nlp-result-screen" class="nlp-screen hidden">
+                <div class="nlp-res-header">
+                    <span class="nlp-res-icon">✅</span>
+                    <span class="nlp-res-title">Kết quả phân tích</span>
+                    <button class="nlp-close-btn" onclick="nlpCloseModal()"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="nlp-entities-wrap" id="nlp-entities-wrap">
+                    <div class="nlp-ent-title">🔍 Thực thể trích xuất</div>
+                    <div id="nlp-entities-list"></div>
+                </div>
+                <div class="nlp-steps-wrap" id="nlp-steps-wrap"></div>
+                <div class="nlp-answer-wrap" id="nlp-answer-wrap"></div>
+                <div class="nlp-res-actions">
+                    <button class="nlp-btn-primary" id="nlp-show-widget-btn" onclick="nlpShowOnBoard()">
+                        <i class="fas fa-chalkboard"></i> Hiển thị lên Bảng
+                    </button>
+                    <button class="nlp-btn-ghost" onclick="nlpGoBack()"><i class="fas fa-arrow-left"></i> Nhập lại</button>
+                    <button class="nlp-btn-ghost" onclick="nlpCloseModal()"><i class="fas fa-times"></i> Đóng</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quiz Modal -->
+    <div id="quiz-modal" class="quiz-modal hidden">
+        <div class="quiz-backdrop" id="quiz-backdrop"></div>
+        <div class="quiz-container">
+            <div id="quiz-setup-screen" class="quiz-screen">
+                <div class="quiz-setup-icon">🎯</div>
+                <h2 class="quiz-title">Tạo Quiz Trắc Nghiệm</h2>
+                <p class="quiz-subtitle">AI sẽ đọc nội dung trên bảng và tự động tạo câu hỏi trắc nghiệm cho bạn.</p>
+                <div class="quiz-num-selector">
+                    <span class="quiz-num-label">Số câu hỏi:</span>
+                    <div class="quiz-num-btns">
+                        <button class="quiz-num-btn" data-num="3">3</button>
+                        <button class="quiz-num-btn active" data-num="5">5</button>
+                        <button class="quiz-num-btn" data-num="10">10</button>
+                    </div>
+                </div>
+                <div class="quiz-setup-actions">
+                    <button id="quiz-start-btn" class="quiz-btn quiz-btn-primary"><i class="fas fa-rocket"></i> Bắt đầu tạo Quiz</button>
+                    <button id="quiz-close-btn" class="quiz-btn quiz-btn-ghost"><i class="fas fa-times"></i> Đóng</button>
+                </div>
+            </div>
+            <div id="quiz-loading-screen" class="quiz-screen hidden">
+                <div class="quiz-loader">
+                    <div class="quiz-loader-ring"></div><div class="quiz-loader-ring"></div><div class="quiz-loader-ring"></div>
+                </div>
+                <p class="quiz-loading-text">AI đang phân tích bảng và tạo câu hỏi...</p>
+                <p class="quiz-loading-sub" id="quiz-loading-log"></p>
+            </div>
+            <div id="quiz-question-screen" class="quiz-screen hidden">
+                <div class="quiz-header">
+                    <div class="quiz-topic-badge" id="quiz-topic-badge">Hóa học</div>
+                    <div class="quiz-progress-bar"><div class="quiz-progress-fill" id="quiz-progress-fill"></div></div>
+                    <div class="quiz-counter" id="quiz-counter">Câu 1 / 5</div>
+                </div>
+                <div class="quiz-card" id="quiz-card">
+                    <div class="quiz-question-num" id="quiz-question-num">Câu 1</div>
+                    <div class="quiz-question-text" id="quiz-question-text">Câu hỏi sẽ hiển thị ở đây...</div>
+                    <div class="quiz-options" id="quiz-options"></div>
+                </div>
+                <div id="quiz-explanation" class="quiz-explanation hidden">
+                    <i class="fas fa-lightbulb"></i><span id="quiz-explanation-text"></span>
+                </div>
+                <div class="quiz-nav">
+                    <button id="quiz-next-btn" class="quiz-btn quiz-btn-primary hidden">Câu tiếp theo <i class="fas fa-arrow-right"></i></button>
+                    <button id="quiz-finish-btn" class="quiz-btn quiz-btn-success hidden">Xem kết quả <i class="fas fa-trophy"></i></button>
+                </div>
+            </div>
+            <div id="quiz-result-screen" class="quiz-screen hidden">
+                <div class="quiz-result-score" id="quiz-result-score">
+                    <div class="quiz-score-circle" id="quiz-score-circle">
+                        <span id="quiz-score-num">0</span>
+                        <span class="quiz-score-total" id="quiz-score-total">/5</span>
+                    </div>
+                    <div class="quiz-score-label" id="quiz-score-label">Xuất sắc! 🏆</div>
+                </div>
+                <div class="quiz-review" id="quiz-review"></div>
+                <div class="quiz-result-actions">
+                    <button id="quiz-retry-btn" class="quiz-btn quiz-btn-primary"><i class="fas fa-redo"></i> Làm lại</button>
+                    <button id="quiz-exit-btn" class="quiz-btn quiz-btn-ghost"><i class="fas fa-times"></i> Đóng</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/function-plot/1.23.0/function-plot.js"></script>
+    <script src="chem_visuals.js?v=21"></script>
+    <script src="script.js?v=20261008_flower"></script>
+    <!-- Page Manager: multi-page + OCR dedup + i18n (loads AFTER script.js) -->
+    <script src="page_manager.js?v=20261008_flower"></script>
+    <!-- Hand Tracking Module -->
+    <script src="mediapipe/vision_bundle.js"></script>
+    <script src="hand_gesture.js?v=3"></script>
+</body>
+</html>
