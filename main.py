@@ -56,7 +56,7 @@ else:
 
 # Model: config qua GEMINI_MODEL trong .env
 # "gemini-2.0-flash" — fast vision model, hỗ trợ JSON mode
-model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 # ===== SPEED OPT: Cache model instance và API key ========
 # Tạo model một lần, tái sử dụng — tránh khởi tạo lại 300-500ms mỗi request
@@ -85,7 +85,21 @@ def _get_model(model_name_: str, system_instruction: str):
         )
     return _model_cache[cache_key]
 
-FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-pro-latest"]
+DEFAULT_MODEL = "gemini-3.5-flash-lite"   # ~2s/phản ứng (đo 2026-10); bản flash thường hay 503 + chờ ~40s
+# Chỉ giữ model nhanh; gemini-3.5-flash có "thinking" nên hay vượt 30s → không dùng làm dự phòng
+FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite"]
+
+# SPEED OPT: "Chạy đua" các model — Google đôi khi treo 1 model hàng chục giây (đặc biệt với ảnh).
+# Gọi model chính trước; sau LLM_HEDGE_DELAY giây chưa xong thì gọi thêm model dự phòng SONG SONG,
+# model nào trả lời hợp lệ trước thì dùng, các lời gọi còn lại bị hủy.
+LLM_HEDGE_DELAY       = 4.0               # giây — chờ bao lâu thì gọi thêm model dự phòng
+LLM_TOTAL_TIMEOUT     = 35.0              # giây — tối đa cho cả lượt gọi
+LLM_COOLDOWN_SECONDS  = 120.0             # model vừa lỗi/chậm → xếp xuống cuối trong 2 phút
+_model_cooldown_until: dict = {}          # { model_name: timestamp hết cooldown }
+
+
+class _ApiKeyInvalid(Exception):
+    pass
 
 
 _LLM_RESPONSE_CACHE: dict = {}
@@ -106,6 +120,45 @@ def _compute_prompt_hash(prompt: list, system_instruction: str) -> str:
     return hasher.hexdigest()
 
 
+def _parse_llm_json(text: str, model_candidate: str) -> dict:
+    """Parse JSON từ AI; JSON lỗi thì cố trích phương trình hóa học bằng regex."""
+    text = text.strip()
+    print(f"[LLM {model_candidate} RAW RESPONSE]: {text[:300]}")
+    # Clean up markdown JSON blocks if present
+    if text.startswith("```json"): text = text[7:]
+    if text.startswith("```"): text = text[3:]
+    if text.endswith("```"): text = text[:-3]
+    try:
+        parsed = json.loads(text.strip())
+        print(f"[LLM PARSED ({model_candidate})]: domain={parsed.get('domain','?')}")
+        return parsed
+    except json.JSONDecodeError as je:
+        print(f"[LLM JSON ERROR]: {je} | Raw: {text[:200]}")
+        # Fallback regex extraction for chemistry if JSON is malformed
+        if '"domain":"chemistry"' in text.replace(' ', ''):
+            import re
+            eq = re.search(r'"equation"\s*:\s*"([^"]+)"', text)
+            eq_val = eq.group(1) if eq else ""
+            reac = re.search(r'"reactants"\s*:\s*\[(.*?)\]', text)
+            reac_val = [x.strip(' "') for x in reac.group(1).split(',')] if reac else []
+            prod = re.search(r'"products"\s*:\s*\[(.*?)\]', text)
+            prod_val = [x.strip(' "') for x in prod.group(1).split(',')] if prod else []
+            return {"domain": "chemistry", "equation": eq_val, "reactants": reac_val, "products": prod_val, "explanation": "Phản ứng đã được nhận dạng."}
+        return {"domain": "general", "explanation": "Lỗi định dạng AI: Hãy thử khoanh vùng lại một chút nhé!"}
+
+
+async def _call_one_model(model_candidate: str, prompt: list, system_instruction: str) -> dict:
+    model = _get_model(model_candidate, system_instruction)
+    try:
+        response = await model.generate_content_async(prompt)
+    except Exception as e:
+        err_msg = str(e)
+        if "API_KEY_INVALID" in err_msg or "API key not valid" in err_msg:
+            raise _ApiKeyInvalid() from e
+        raise
+    return _parse_llm_json(response.text, model_candidate)
+
+
 async def call_llm(prompt: list, system_instruction: str) -> dict:
     # SPEED OPT 1: Kiểm tra Smart Cache trước khi gọi API
     cache_key = _compute_prompt_hash(prompt, system_instruction)
@@ -121,52 +174,61 @@ async def call_llm(prompt: list, system_instruction: str) -> dict:
     if not current_key:
         return {"domain": "general", "explanation": "❌ Chưa cấu hình GEMINI_API_KEY trong file .env!"}
 
-    active_model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    import time
+    active_model_name = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
     models_to_try = [active_model_name] + [m for m in FALLBACK_MODELS if m != active_model_name]
+    # Đẩy model đang cooldown (vừa lỗi/chậm) xuống cuối — vẫn giữ làm phương án cuối cùng
+    now = time.time()
+    models_to_try.sort(key=lambda m: _model_cooldown_until.get(m, 0) > now)
 
-    for model_candidate in models_to_try:
-        try:
-            model = _get_model(model_candidate, system_instruction)
-            response = await model.generate_content_async(prompt)
-            text = response.text.strip()
-            print(f"[LLM {model_candidate} RAW RESPONSE]: {text[:300]}")
-            # Clean up markdown JSON blocks if present
-            if text.startswith("```json"): text = text[7:]
-            if text.startswith("```"): text = text[3:]
-            if text.endswith("```"): text = text[:-3]
-            parsed = json.loads(text.strip())
-            print(f"[LLM PARSED ({model_candidate})]: domain={parsed.get('domain','?')}")
+    started = time.time()
+    running: dict = {}            # task -> model name
+    next_idx = 0
 
-            # Lưu vào cache để tái sử dụng ngay lập tức
-            _LLM_RESPONSE_CACHE[cache_key] = parsed
-            if len(_LLM_RESPONSE_CACHE) > 300:
-                _LLM_RESPONSE_CACHE.pop(next(iter(_LLM_RESPONSE_CACHE)))
+    def launch_next():
+        nonlocal next_idx
+        m = models_to_try[next_idx]
+        next_idx += 1
+        print(f"[LLM] Gọi {m} ({time.time() - started:.1f}s)")
+        running[asyncio.ensure_future(_call_one_model(m, prompt, system_instruction))] = m
 
-            return parsed
-        except json.JSONDecodeError as je:
-            print(f"[LLM JSON ERROR]: {je} | Raw: {text[:200]}")
-            # Fallback regex extraction for chemistry if JSON is malformed
-            if '"domain":"chemistry"' in text.replace(' ', ''):
-                import re
-                eq = re.search(r'"equation"\s*:\s*"([^"]+)"', text)
-                eq_val = eq.group(1) if eq else ""
-                reac = re.search(r'"reactants"\s*:\s*\[(.*?)\]', text)
-                reac_val = [x.strip(' "') for x in reac.group(1).split(',')] if reac else []
-                prod = re.search(r'"products"\s*:\s*\[(.*?)\]', text)
-                prod_val = [x.strip(' "') for x in prod.group(1).split(',')] if prod else []
-                return {"domain": "chemistry", "equation": eq_val, "reactants": reac_val, "products": prod_val, "explanation": "Phản ứng đã được nhận dạng."}
-            return {"domain": "general", "explanation": "Lỗi định dạng AI: Hãy thử khoanh vùng lại một chút nhé!"}
-        except Exception as e:
-            err_name = type(e).__name__
-            err_msg  = str(e)
-            print(f"[LLM ERROR with {model_candidate}]: {err_name}: {err_msg[:150]}", flush=True)
-            if "API_KEY_INVALID" in err_msg or "API key not valid" in err_msg:
-                print(f"[LLM] API KEY KHÔNG HỢP LỆ! Vui lòng lấy key mới.")
-                return {"domain": "general", "explanation": "API Key không hợp lệ! Vui lòng cập nhật GEMINI_API_KEY trong file .env."}
-            # Thử model tiếp theo trong danh sách dự phòng
-            print(f"[LLM FALLBACK] Thử model tiếp theo sau {model_candidate}...")
-            await asyncio.sleep(0.5)
-            continue
+    launch_next()
+    try:
+        while running:
+            remaining = LLM_TOTAL_TIMEOUT - (time.time() - started)
+            if remaining <= 0:
+                break
+            # Còn model dự phòng → chỉ chờ LLM_HEDGE_DELAY rồi gọi thêm model song song
+            wait_for = min(LLM_HEDGE_DELAY, remaining) if next_idx < len(models_to_try) else remaining
+            done, _ = await asyncio.wait(running.keys(), timeout=wait_for, return_when=asyncio.FIRST_COMPLETED)
+
+            for task in done:
+                m = running.pop(task)
+                try:
+                    parsed = task.result()
+                except _ApiKeyInvalid:
+                    print(f"[LLM] API KEY KHÔNG HỢP LỆ! Vui lòng lấy key mới.")
+                    return {"domain": "general", "explanation": "API Key không hợp lệ! Vui lòng cập nhật GEMINI_API_KEY trong file .env."}
+                except Exception as e:
+                    print(f"[LLM ERROR with {m}]: {type(e).__name__}: {str(e)[:150]}", flush=True)
+                    _model_cooldown_until[m] = time.time() + LLM_COOLDOWN_SECONDS
+                    continue
+                print(f"[LLM] ✅ {m} trả lời sau {time.time() - started:.1f}s")
+                # Lưu vào cache để tái sử dụng ngay lập tức
+                _LLM_RESPONSE_CACHE[cache_key] = parsed
+                if len(_LLM_RESPONSE_CACHE) > 300:
+                    _LLM_RESPONSE_CACHE.pop(next(iter(_LLM_RESPONSE_CACHE)))
+                return parsed
+
+            # Chưa có kết quả (chậm hoặc vừa lỗi) → gọi thêm model dự phòng
+            if next_idx < len(models_to_try):
+                if not done:
+                    for m in running.values():
+                        _model_cooldown_until[m] = time.time() + LLM_COOLDOWN_SECONDS
+                launch_next()
+    finally:
+        for task in running:
+            task.cancel()
 
     return {"domain": "general", "explanation": "Hệ thống AI tạm thời bận do chạm giới hạn lượt gọi. Vui lòng thử lại sau vài giây!"}
 
@@ -412,6 +474,9 @@ def _enrich_catalyst(reactants: list, ai_catalyst: str, ai_conditions: list) -> 
     """Bổ sung catalyst từ CATALYST_DB nếu AI bỏ sót."""
     key = frozenset(_normalize_formula(r) for r in reactants)
     db_entry = CATALYST_DB.get(key)
+    # AI đôi khi trả chuỗi "null"/"none" thay vì null thật
+    if isinstance(ai_catalyst, str) and ai_catalyst.strip().lower() in ("null", "none", ""):
+        ai_catalyst = None
     catalyst   = ai_catalyst or (db_entry["catalyst"] if db_entry else None) or None
     conditions = ai_conditions or (db_entry["conditions"] if db_entry else []) or []
     return {"catalyst": catalyst, "conditions": conditions}
@@ -783,22 +848,12 @@ CHEMISTRY OUTPUT (balance equation, fill all products):
   "reactants":["A","B"], "products":["C","D"],
   "catalyst":"<MnO₂|Fe|V₂O₅|Pt|Ni|H₂SO₄đặc|ánhsáng|null>",
   "conditions":["<t°>","<200atm>"],
-  "mol_variants":[{"condition":"<case>","ratio_rule":"<formula>","equation":"<balanced>","products":["X"],"note":"<note>"}],
-  "explanation":"<Vietnamese, mark ↓precipitate ↑gas>",
   "pedagogy":{
-    "mechanism":"<ion/electron mechanism 1-2 sentences>",
-    "reaction_type_label":"<hóa hợp|phân hủy|thế|trao đổi|oxi hóa khử>",
-    "simulation":"<vivid description of what you SEE/HEAR/SMELL, 2-3 sentences>",
-    "warnings":["<warning1>"],
-    "theory":"<THPT theory 1-2 sentences>",
-    "applications":"<1 real-world use>",
-    "student_note":"<key tip for student>",
-    "fun_fact":"<interesting fact>"
+    "warnings":["<short safety warning, only if the reaction is hazardous; otherwise empty list>"]
   }
 }
 
 CATALYST RULES: H₂O₂→MnO₂; KClO₃→MnO₂+t°; N₂+H₂→Fe,450°C,200atm; SO₂+O₂→V₂O₅,450°C; NH₃+O₂→Pt,850°C; CH₄+Cl₂→ánhsáng; H₂+Cl₂→ánhsáng; C₂H₄+H₂→Ni+t°; ester→H₂SO₄đặc+t°; Fe/C/S+O₂→t°.
-MOL VARIANTS: C+O₂(O₂dư→CO₂;thiếu→CO); CO₂+NaOH(≥2→Na₂CO₃;1-2→mix;≤1→NaHCO₃); CO₂+Ca(OH)₂(dư→CaCO₃↓;CO₂dư→Ca(HCO₃)₂); Fe+HNO₃(Fethiếu→Fe(NO₃)₃;Fedư→Fe(NO₃)₂); Na+O₂(thường→Na₂O;O₂dư→Na₂O₂); Cu+HNO₃(đặc→NO₂;loãng→NO).
 HYDROXIDES: Cu(OH)₂, Fe(OH)₃, Fe(OH)₂, Al(OH)₃, Zn(OH)₂, Mg(OH)₂, Ca(OH)₂, Ba(OH)₂.
 PRECIPITATES: BaSO₄↓(trắng), AgCl↓(trắng), CaCO₃↓(trắng), Cu(OH)₂↓(xanh lam), Fe(OH)₃↓(nâu đỏ), Al(OH)₃↓(trắng keo).
 GASES: H₂↑(không màu), CO₂↑(không màu), Cl₂↑(vàng lục độc), SO₂↑(hắc độc), NH₃↑(khai).
@@ -1022,6 +1077,21 @@ Respond STRICTLY in JSON format (without markdown backticks).
 
 # --- WORKFLOW ---
 
+@app.on_event("startup")
+async def _warmup_llm():
+    """SPEED OPT: gọi AI một lần lúc khởi động để mở sẵn kết nối tới Google —
+    lần trực quan hóa đầu tiên không phải chờ thêm ~1,5 s thiết lập kết nối."""
+    async def run():
+        import time
+        t = time.time()
+        try:
+            await call_llm(["ping"], 'Return JSON: {"ok": true}')
+            print(f"[WARMUP] Kết nối AI sẵn sàng ({time.time() - t:.1f}s)")
+        except Exception as e:
+            print(f"[WARMUP] Bỏ qua: {e}")
+    asyncio.create_task(run())
+
+
 @app.websocket("/ws/analyze")
 @app.websocket("/ws")
 async def websocket_analyze(websocket: WebSocket):
@@ -1234,6 +1304,7 @@ BƯỚC 2 — TẠO {num_questions} CÂU HỎI THEO CÁC DẠNG SAU:
    Ví dụ: "Khi pha loãng H₂SO₄ đặc, cần tuân thủ quy tắc nào?"
 
 QUY TẮC BẮT BUỘC:
+- TUYỆT ĐỐI KHÔNG BỊA nội dung: nếu ảnh bảng trống, chỉ có nét vẽ nguệch ngoạc, hoặc KHÔNG đọc được công thức/phương trình/khái niệm hóa học rõ ràng → trả về đúng {{"topic": "", "questions": []}}
 - Câu hỏi PHẢI nhắc tên chất hoặc phương trình CỤ THỂ trên bảng
 - NẾU BẢNG CÓ PHƯƠNG TRÌNH → tối thiểu 3/5 câu phải hỏi về phương trình đó
 - 3 đáp án sai phải là "bẫy thường gặp" của học sinh (không ngớ ngẩn)
