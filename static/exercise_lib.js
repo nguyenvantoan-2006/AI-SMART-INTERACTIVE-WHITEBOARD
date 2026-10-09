@@ -362,5 +362,97 @@
         panel.classList.contains('hidden') ? openPanel() : closePanel();
     });
 
+    // ── Kéo ảnh đề SANG TRANG KHÁC ──────────────────────────────────────
+    // Kéo ra ngoài trang: ảnh mờ bám theo con trỏ, sát mép trên/dưới thì tự cuộn,
+    // thả lên trang nào thì ảnh chuyển sang trang đó (đúng chỗ thả).
+    let clipDrag = null;   // { obj, grabX, grabY, lastX, lastY, ghost, outside, raf }
+    const slotAt = (x, y) => document.elementsFromPoint(x, y).find(n => n.classList && n.classList.contains('page-slot')) || null;
+    const currentSlot = () => document.getElementById('canvas-section')?.parentElement;
+
+    canvas.on('mouse:down', (opt) => {
+        const o = opt.target;
+        if (!o || !(o.data && o.data.isClip) || !opt.e) return;
+        const e = opt.e.touches ? opt.e.touches[0] : opt.e;
+        const r = document.getElementById('canvas-section').getBoundingClientRect();
+        const ghost = document.createElement('img');
+        ghost.className = 'clip-drag-ghost hidden';
+        ghost.src = o.getSrc();
+        ghost.style.width = o.getScaledWidth() + 'px';
+        ghost.style.height = o.getScaledHeight() + 'px';
+        document.body.appendChild(ghost);
+        clipDrag = { obj: o, grabX: e.clientX - (r.left + o.left), grabY: e.clientY - (r.top + o.top),
+                     lastX: e.clientX, lastY: e.clientY, ghost, outside: false, raf: null };
+        window.__clipDragging = true;
+        clipAutoScroll();
+    });
+
+    function setOutside(out) {
+        if (!clipDrag || clipDrag.outside === out) return;
+        clipDrag.outside = out;
+        clipDrag.ghost.classList.toggle('hidden', !out);
+        clipDrag.obj.set('opacity', out ? 0 : 1);
+        canvas.requestRenderAll();
+    }
+    function moveGhost(x, y) {
+        if (!clipDrag) return;
+        clipDrag.lastX = x; clipDrag.lastY = y;
+        setOutside(slotAt(x, y) !== currentSlot());
+        clipDrag.ghost.style.left = (x - clipDrag.grabX) + 'px';
+        clipDrag.ghost.style.top = (y - clipDrag.grabY) + 'px';
+    }
+    document.addEventListener('pointermove', (e) => { if (clipDrag) moveGhost(e.clientX, e.clientY); });
+
+    // Sát mép trên/dưới khung cuộn → tự cuộn để tới các trang đang khuất
+    function clipAutoScroll() {
+        if (!clipDrag) return;
+        const sc = document.getElementById('page-scroller');
+        if (sc) {
+            const r = sc.getBoundingClientRect(), EDGE = 60;
+            let v = 0;
+            if (clipDrag.lastY < r.top + EDGE) v = -Math.ceil((r.top + EDGE - clipDrag.lastY) / 4);
+            else if (clipDrag.lastY > r.bottom - EDGE) v = Math.ceil((clipDrag.lastY - (r.bottom - EDGE)) / 4);
+            if (v) { sc.scrollTop += v; moveGhost(clipDrag.lastX, clipDrag.lastY); }
+        }
+        clipDrag.raf = requestAnimationFrame(clipAutoScroll);
+    }
+
+    document.addEventListener('pointerup', async () => {
+        if (!clipDrag) return;
+        const d = clipDrag;
+        clipDrag = null;
+        cancelAnimationFrame(d.raf);
+        d.ghost.remove();
+        const slot = slotAt(d.lastX, d.lastY);
+        if (d.outside && slot && slot !== currentSlot() && typeof window.switchToPage === 'function') {
+            // Chuyển ảnh sang trang được thả
+            const json = d.obj.toObject(['data']);
+            json.opacity = 1;
+            const r = slot.getBoundingClientRect();
+            const w = d.obj.getScaledWidth(), h = d.obj.getScaledHeight();
+            canvas.remove(d.obj);
+            canvas.discardActiveObject();
+            canvas.renderAll();
+            if (typeof saveState === 'function') saveState();
+            await window.switchToPage(Number(slot.dataset.pageId));
+            fabric.util.enlivenObjects([json], ([img]) => {
+                img.set({
+                    left: Math.max(0, Math.min(d.lastX - d.grabX - r.left, canvas.width - w)),
+                    top: Math.max(0, Math.min(d.lastY - d.grabY - r.top, canvas.height - h)),
+                    selectable: false, evented: false
+                });
+                canvas.add(img);
+                canvas.renderAll();
+                if (typeof saveState === 'function') saveState();
+                window.__clipDragging = false;
+            });
+            return;
+        }
+        // Thả ngoài mọi trang → ảnh ở lại trang cũ
+        d.obj.set('opacity', 1);
+        d.obj.setCoords();
+        canvas.requestRenderAll();
+        window.__clipDragging = false;
+    });
+
     window.ExerciseLibrary = { open: openPanel, close: closePanel, addClipToBoard };
 })();

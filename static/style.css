@@ -4117,3 +4117,7 @@ img.exlib-page { height: auto; }
 }
 .lesson-export-hint.show { opacity: 1; }
 #btn-export-pdf:disabled { opacity: 0.6; cursor: wait; }
+
+/* Ảnh đề đang được kéo sang trang khác */
+.clip-drag-ghost { position: fixed; z-index: 3000; pointer-events: none; opacity: 0.85; outline: 2px dashed #f59e0b; border-radius: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+.clip-drag-ghost.hidden { display: none; }
