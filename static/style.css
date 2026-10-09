@@ -4107,3 +4107,13 @@ img.exlib-page { height: auto; }
 .exlib-clip-tip { font-size: 0.75rem; color: var(--muted); }
 .exlib-btn-primary { background: linear-gradient(135deg, #10b981, #059669); color: #fff; border: none; border-radius: 8px; padding: 7px 12px; font-weight: 700; cursor: pointer; }
 .exlib-btn-ghost { background: rgba(255,255,255,0.08); color: #cbd5e1; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+
+/* Thông báo nhỏ của nút Tải bài giảng */
+.lesson-export-hint {
+    position: fixed; z-index: 2500; width: 280px; text-align: center;
+    background: #0f2035; color: #e2e8f0; border: 1px solid rgba(255,255,255,0.15); border-radius: 10px;
+    padding: 8px 12px; font-size: 0.8rem; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
+}
+.lesson-export-hint.show { opacity: 1; }
+#btn-export-pdf:disabled { opacity: 0.6; cursor: wait; }
