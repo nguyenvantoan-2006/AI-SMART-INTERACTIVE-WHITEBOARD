@@ -4055,3 +4055,55 @@ canvas, #whiteboard-canvas, .canvas-container, .upper-canvas, .lower-canvas {
 }
 .quiz-setup-msg.hidden { display: none; }
 #quiz-start-btn:disabled { opacity: 0.45; cursor: not-allowed; filter: grayscale(0.4); }
+
+/* ============================================
+   KHO BÀI TẬP (exercise_lib.js) — khung bên phải, cắt bài kéo ra bảng
+============================================ */
+.exlib-panel {
+    position: fixed; top: 0; right: 0; z-index: 1500;
+    width: min(46vw, 820px); height: calc(100vh - 48px);
+    background: #0f1b2e; border-left: 1px solid rgba(255,255,255,0.12);
+    box-shadow: -12px 0 32px rgba(0,0,0,0.45);
+    display: flex; flex-direction: column;
+}
+.exlib-panel.hidden { display: none; }
+.exlib-header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.exlib-title { font-weight: 800; color: #f8fafc; font-size: 0.95rem; flex: 1; }
+.exlib-upload-btn {
+    background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; border-radius: 8px;
+    padding: 6px 12px; font-size: 0.8rem; font-weight: 700; cursor: pointer;
+}
+.exlib-close { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.35); color: #f87171; border-radius: 8px; width: 32px; height: 32px; cursor: pointer; }
+.exlib-body { flex: 1; display: flex; min-height: 0; }
+.exlib-list { width: 180px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid rgba(255,255,255,0.08); padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+.exlib-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; cursor: pointer; color: #cbd5e1; font-size: 0.8rem; }
+.exlib-item:hover { background: rgba(255,255,255,0.06); }
+.exlib-item.active { background: rgba(59,130,246,0.2); color: #fff; }
+.exlib-item .fa-file-pdf { color: #f87171; }
+.exlib-item .fa-file-word { color: #60a5fa; }
+.exlib-item .fa-file-image { color: #34d399; }
+.exlib-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exlib-item-del { background: none; border: none; cursor: pointer; opacity: 0.4; font-size: 0.8rem; }
+.exlib-item:hover .exlib-item-del { opacity: 1; }
+.exlib-empty { color: var(--muted); font-size: 0.8rem; padding: 14px 8px; line-height: 1.5; text-align: center; }
+.exlib-viewer-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+.exlib-hint { font-size: 0.75rem; color: #93c5fd; padding: 6px 14px; background: rgba(59,130,246,0.08); }
+.exlib-viewer { flex: 1; overflow: auto; padding: 16px; display: flex; flex-direction: column; align-items: safe center; gap: 14px; background: #1b2433; }
+.exlib-page { display: block; background: #fff; box-shadow: 0 4px 16px rgba(0,0,0,0.4); cursor: crosshair; user-select: none; max-width: 100%; }
+img.exlib-page { height: auto; }
+.exlib-docx { width: 100%; }
+.exlib-docx .docx-wrapper { background: transparent !important; padding: 0 !important; display: flex; flex-direction: column; gap: 14px; align-items: stretch; }
+.exlib-docx section.docx { width: 100% !important; box-sizing: border-box; }
+.exlib-docx section.docx { box-shadow: 0 4px 16px rgba(0,0,0,0.4) !important; margin: 0 !important; }
+.exlib-sel { position: fixed; z-index: 3000; border: 2px dashed #f59e0b; background: rgba(245,158,11,0.12); pointer-events: none; }
+.exlib-clip {
+    position: absolute; left: 12px; right: 12px; bottom: 12px;
+    background: #0b1426; border: 1px solid rgba(245,158,11,0.5); border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.6); padding: 10px; display: flex; gap: 12px; align-items: center;
+}
+.exlib-clip.hidden { display: none; }
+.exlib-clip img { max-width: 55%; max-height: 160px; background: #fff; border-radius: 6px; cursor: grab; box-shadow: 0 0 0 2px #f59e0b; }
+.exlib-clip-actions { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.exlib-clip-tip { font-size: 0.75rem; color: var(--muted); }
+.exlib-btn-primary { background: linear-gradient(135deg, #10b981, #059669); color: #fff; border: none; border-radius: 8px; padding: 7px 12px; font-weight: 700; cursor: pointer; }
+.exlib-btn-ghost { background: rgba(255,255,255,0.08); color: #cbd5e1; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 4px 10px; cursor: pointer; }

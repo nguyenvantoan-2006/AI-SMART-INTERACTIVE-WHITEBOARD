@@ -68,3 +68,6 @@ Templates for Capstone Project/
 # OS
 .DS_Store
 Thumbs.db
+
+# Kho bài tập giáo viên tải lên (dữ liệu riêng, không đẩy lên GitHub)
+exercises/
