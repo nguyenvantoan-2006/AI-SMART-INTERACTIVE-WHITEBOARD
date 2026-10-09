@@ -109,7 +109,8 @@ const TRANSLATIONS = {
   }
 };
 
-let currentLang = localStorage.getItem('wb_lang') || 'vi';
+// Giao diện cố định tiếng Việt (đã bỏ nút chọn ngôn ngữ — nó chỉ đổi chữ hiển thị, không ảnh hưởng tốc độ)
+const currentLang = 'vi';
 
 function t(key, vars) {
   let s = (TRANSLATIONS[currentLang] || TRANSLATIONS.vi)[key] || key;
@@ -135,30 +136,9 @@ function applyI18n() {
     el.placeholder = t(key);
   });
 
-  // Update top language selector indicator
-  const langTextEl = document.getElementById('current-lang-text');
-  const langFlagEl = document.getElementById('current-lang-flag');
-  if (langTextEl) langTextEl.textContent = currentLang === 'vi' ? 'Tiếng Việt' : 'English';
-  if (langFlagEl) langFlagEl.textContent = currentLang === 'vi' ? '🇻🇳' : '🇬🇧';
-
-  document.querySelectorAll('.lang-dropdown-item').forEach(btn => {
-    btn.classList.toggle('active', btn.getAttribute('data-lang') === currentLang);
-  });
-
   // Update page counter & tabs
   if (typeof updatePageUI === 'function') updatePageUI();
   document.documentElement.lang = currentLang;
-}
-
-function setLang(lang) {
-  if (lang !== 'vi' && lang !== 'en') lang = 'vi';
-  currentLang = lang;
-  localStorage.setItem('wb_lang', lang);
-  applyI18n();
-
-  // Close dropdown if open
-  const dropdownList = document.getElementById('lang-dropdown-list');
-  if (dropdownList) dropdownList.classList.add('hidden');
 }
 
 // ── 2. MULTI-PAGE STATE MANAGEMENT ───────────────────────────
@@ -317,77 +297,179 @@ function loadPageCanvas(pageId) {
   });
 }
 
-async function switchToPage(newPageId) {
-  if (newPageId === pageManager.currentPageId) return;
-  saveCurrentPageCanvas();
-  pageManager.currentPageId = newPageId;
-  await loadPageCanvas(newPageId);
-  updatePageUI();
+// ── 3b. CONTINUOUS VERTICAL PAGES (kiểu Word) ─────────────────
+// Các trang xếp dọc trong 1 khung cuộn có thanh kéo bên phải.
+// Trang đang làm việc = canvas Fabric thật (#canvas-section được chuyển vào ô của trang đó);
+// các trang khác hiển thị ảnh chụp. Cuộn tới trang nào thì trang đó trở thành trang làm việc.
+const PAGE_GAP = 16;           // khoảng cách giữa các trang (px)
+let pageScroller = null;       // khung cuộn
+let pageStack = null;          // cột chứa các ô trang
+let _switchChain = Promise.resolve();
+let _scrollTimer = null;
 
-  if (typeof showToast === 'function') {
-    showToast(t('page') + ' ' + getPageNum(newPageId), 'info', 1200);
-  }
+function getPageSlot(pageId) {
+  return pageStack ? pageStack.querySelector(`.page-slot[data-page-id="${pageId}"]`) : null;
+}
+
+function snapshotCurrentPage() {
+  const page = pageManager.getCurrentPage();
+  if (!page || typeof canvas === 'undefined' || !canvas) return;
+  try {
+    page.thumb = canvas.lowerCanvasEl.toDataURL('image/jpeg', 0.8);
+  } catch (e) { page.thumb = null; }
+}
+
+// Kích thước 1 trang = vừa khít khung nhìn, chừa khoảng hở để thấy mép trang trên/dưới
+function computePageSize() {
+  const w = pageScroller.clientWidth - PAGE_GAP * 2;
+  const h = pageScroller.clientHeight - PAGE_GAP * 2;
+  return { w: Math.max(200, w), h: Math.max(150, h) };
+}
+
+// Đồng bộ các ô trang với pageManager.pages (thứ tự, kích thước, ảnh chụp, canvas thật)
+function layoutPages() {
+  if (!pageStack) return;
+  const { w, h } = computePageSize();
+  pageStack.style.setProperty('--page-w', w + 'px');
+  pageStack.style.setProperty('--page-h', h + 'px');
+  pageStack.style.setProperty('--page-gap', PAGE_GAP + 'px');
+
+  const canvasSection = document.getElementById('canvas-section');
+  const wanted = pageManager.pages.map(p => String(p.id));
+  // Xóa ô của trang không còn tồn tại (không bao giờ xóa canvas thật)
+  pageStack.querySelectorAll('.page-slot').forEach(slot => {
+    if (!wanted.includes(slot.dataset.pageId)) {
+      if (slot.contains(canvasSection)) pageScroller.parentElement.appendChild(canvasSection);
+      slot.remove();
+    }
+  });
+
+  pageManager.pages.forEach((pg, idx) => {
+    let slot = getPageSlot(pg.id);
+    if (!slot) {
+      slot = document.createElement('div');
+      slot.className = 'page-slot';
+      slot.dataset.pageId = pg.id;
+      const img = document.createElement('img');
+      img.className = 'page-thumb';
+      img.draggable = false;
+      img.alt = '';
+      slot.appendChild(img);
+      const badge = document.createElement('span');
+      badge.className = 'page-slot-num';
+      slot.appendChild(badge);
+    }
+    if (pageStack.children[idx] !== slot) pageStack.insertBefore(slot, pageStack.children[idx] || null);
+
+    const isCurrent = pg.id === pageManager.currentPageId;
+    slot.classList.toggle('current', isCurrent);
+    slot.querySelector('.page-slot-num').textContent = t('page') + ' ' + (idx + 1);
+    const img = slot.querySelector('.page-thumb');
+    if (isCurrent) {
+      if (canvasSection && canvasSection.parentElement !== slot) slot.appendChild(canvasSection);
+      img.style.display = 'none';
+    } else {
+      img.style.display = pg.thumb ? '' : 'none';
+      if (pg.thumb && img.src !== pg.thumb) img.src = pg.thumb;
+    }
+  });
+
+  if (typeof resizeCanvas === 'function') resizeCanvas();
+}
+
+function scrollToPage(pageId, smooth = true) {
+  const slot = getPageSlot(pageId);
+  if (!slot || !pageScroller) return;
+  pageScroller.scrollTo({ top: slot.offsetTop - PAGE_GAP, behavior: smooth ? 'smooth' : 'auto' });
+}
+
+// Trang chiếm nhiều diện tích nhất trong khung nhìn
+function getMostVisiblePageId() {
+  if (!pageScroller || !pageStack) return pageManager.currentPageId;
+  const top = pageScroller.scrollTop, bottom = top + pageScroller.clientHeight;
+  let best = pageManager.currentPageId, bestVis = -1;
+  pageStack.querySelectorAll('.page-slot').forEach(slot => {
+    const vis = Math.min(bottom, slot.offsetTop + slot.offsetHeight) - Math.max(top, slot.offsetTop);
+    if (vis > bestVis) { bestVis = vis; best = Number(slot.dataset.pageId); }
+  });
+  return best;
+}
+
+function switchToPage(newPageId) {
+  // Xếp hàng các lần chuyển trang để không chồng chéo khi cuộn nhanh
+  _switchChain = _switchChain.then(async () => {
+    if (newPageId === pageManager.currentPageId) return;
+    if (!pageManager.pages.some(p => p.id === newPageId)) return;
+    saveCurrentPageCanvas();
+    snapshotCurrentPage();
+    pageManager.currentPageId = newPageId;
+    layoutPages();
+    await loadPageCanvas(newPageId);
+    updatePageUI();
+  });
+  return _switchChain;
+}
+
+function onPageScroll() {
+  // Bộ đếm cập nhật ngay khi cuộn; canvas thật chuyển sang trang mới khi ngừng cuộn
+  updatePageUI(getMostVisiblePageId());
+  clearTimeout(_scrollTimer);
+  _scrollTimer = setTimeout(() => {
+    // Đang kéo nội dung vùng khoanh giữa các trang → chưa đổi trang làm việc
+    if (typeof lassoMove !== 'undefined' && lassoMove) { onPageScroll(); return; }
+    const id = getMostVisiblePageId();
+    if (id !== pageManager.currentPageId) switchToPage(id);
+  }, 140);
+}
+
+function initPageScroller() {
+  const canvasSection = document.getElementById('canvas-section');
+  if (!canvasSection || pageScroller) return;
+  const workspace = canvasSection.parentElement;
+
+  pageScroller = document.createElement('div');
+  pageScroller.id = 'page-scroller';
+  pageScroller.className = 'page-scroller';
+  pageStack = document.createElement('div');
+  pageStack.id = 'page-stack';
+  pageStack.className = 'page-stack';
+  pageScroller.appendChild(pageStack);
+  workspace.insertBefore(pageScroller, canvasSection);
+  pageStack.appendChild(canvasSection);   // rời khỏi workspace trước khi đo kích thước trang
+
+  layoutPages();
+
+  pageScroller.addEventListener('scroll', onPageScroll, { passive: true });
+  // Chạm/bấm vào ảnh của trang khác → chuyển ngay sang trang đó
+  pageStack.addEventListener('pointerdown', (e) => {
+    const slot = e.target.closest('.page-slot');
+    if (slot && !slot.classList.contains('current')) switchToPage(Number(slot.dataset.pageId));
+  });
+  window.addEventListener('resize', () => {
+    layoutPages();
+    scrollToPage(pageManager.currentPageId, false);
+  });
+  // Cử chỉ vẫy tay → cuộn sang trang trước / sau
+  window.addEventListener('handgesture:swipe', (e) => {
+    const idx = pageManager.getPageIndex() + (e.detail.direction === 'swipe_right' ? 1 : -1);
+    if (idx >= 0 && idx < pageManager.pages.length) scrollToPage(pageManager.pages[idx].id);
+  });
 }
 
 // ── 4. PAGE NAVIGATION UI CONTROLS ────────────────────────────
-function updatePageUI() {
-  const pages = pageManager.pages;
-  const curId = pageManager.currentPageId;
-  const curNum = getPageNum(curId);
-  const total = pages.length;
-
-  // Counter text: e.g. "Trang 1 / 3" or "Page 1 of 3"
+function updatePageUI(visiblePageId = pageManager.currentPageId) {
+  const total = pageManager.pages.length;
   const counter = document.getElementById('page-counter');
-  if (counter) counter.textContent = t('pageOf', { cur: curNum, total });
-
-  // Prev / Next button states
-  const btnPrev = document.getElementById('btn-page-prev');
-  const btnNext = document.getElementById('btn-page-next');
-  if (btnPrev) btnPrev.disabled = curNum <= 1;
-  if (btnNext) btnNext.disabled = curNum >= total;
+  if (counter) counter.textContent = t('pageOf', { cur: getPageNum(visiblePageId), total });
 
   // Delete page button (disable when only 1 page remains)
   const btnDelete = document.getElementById('btn-page-delete');
   if (btnDelete) btnDelete.disabled = total <= 1;
 
-  // Tab Strip: Page 1 | Page 2 | Page 3...
-  const strip = document.getElementById('page-tabs-strip');
-  if (!strip) return;
-  strip.innerHTML = '';
-
-  pages.forEach((pg) => {
-    const num = getPageNum(pg.id);
-    const tab = document.createElement('div');
-    tab.className = 'page-tab' + (pg.id === curId ? ' active' : '');
-    tab.setAttribute('data-page-id', pg.id);
-
-    const label = document.createElement('span');
-    label.className = 'page-tab-label';
-    label.textContent = t('page') + ' ' + num;
-    label.title = t('page') + ' ' + num;
-    label.addEventListener('click', () => switchToPage(pg.id));
-    tab.appendChild(label);
-
-    // If more than 1 page, show close button on tab
-    if (total > 1) {
-      const closeBtn = document.createElement('button');
-      closeBtn.className = 'page-tab-close';
-      closeBtn.innerHTML = '&times;';
-      closeBtn.title = t('deletePage') + ' ' + num;
-      closeBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        window.deletePage(pg.id);
-      });
-      tab.appendChild(closeBtn);
-    }
-
-    strip.appendChild(tab);
-  });
-
-  // Ensure active tab is scrolled into view smoothly
-  const activeTab = strip.querySelector('.page-tab.active');
-  if (activeTab && strip.parentElement) {
-    activeTab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  if (pageStack) {
+    pageStack.querySelectorAll('.page-slot').forEach((slot, idx) => {
+      slot.querySelector('.page-slot-num').textContent = t('page') + ' ' + (idx + 1);
+    });
   }
 }
 
@@ -406,50 +488,30 @@ window.deletePage = function(targetPageId) {
   const success = pageManager.deletePage(idToDelete);
   if (!success) return false;
 
-  if (wasActive) {
-    loadPageCanvas(pageManager.currentPageId).then(() => {
-      updatePageUI();
-      if (typeof showToast === 'function') {
-        showToast(t('pageDeleted', { num }), 'info');
-      }
-    });
-  } else {
+  const done = () => {
+    layoutPages();
     updatePageUI();
-    if (typeof showToast === 'function') {
-      showToast(t('pageDeleted', { num }), 'info');
-    }
+    scrollToPage(pageManager.currentPageId, false);
+    if (typeof showToast === 'function') showToast(t('pageDeleted', { num }), 'info');
+  };
+  if (wasActive) {
+    layoutPages();
+    loadPageCanvas(pageManager.currentPageId).then(done);
+  } else {
+    done();
   }
   return true;
 };
 
 function initPageControls() {
-  // Previous Page
-  document.getElementById('btn-page-prev')?.addEventListener('click', () => {
-    const idx = pageManager.getPageIndex();
-    if (idx > 0) switchToPage(pageManager.pages[idx - 1].id);
-  });
+  initPageScroller();
 
-  // Next Page
-  document.getElementById('btn-page-next')?.addEventListener('click', () => {
-    const idx = pageManager.getPageIndex();
-    if (idx < pageManager.pages.length - 1) switchToPage(pageManager.pages[idx + 1].id);
-  });
-
-  // Add Page
-  document.getElementById('btn-page-add')?.addEventListener('click', () => {
-    saveCurrentPageCanvas();
+  // Add Page — thêm vào cuối và cuộn xuống trang mới
+  document.getElementById('btn-page-add')?.addEventListener('click', async () => {
     const newId = pageManager.addPage();
-    pageManager.currentPageId = newId;
-
-    if (typeof canvas !== 'undefined' && canvas) {
-      canvas.clear();
-      canvas.backgroundColor = '#0a1628';
-      canvas.renderAll();
-    }
-    if (typeof undoStack !== 'undefined') undoStack.length = 0;
-    if (typeof redoStack !== 'undefined') redoStack.length = 0;
-
-    updatePageUI();
+    layoutPages();
+    await switchToPage(newId);
+    scrollToPage(newId);
     if (typeof showToast === 'function') {
       showToast(t('pageAdded') + ' — ' + t('page') + ' ' + getPageNum(newId), 'success');
     }
@@ -459,31 +521,6 @@ function initPageControls() {
   document.getElementById('btn-page-delete')?.addEventListener('click', () => {
     window.deletePage(pageManager.currentPageId);
   });
-
-  // Language Dropdown Selector (Req #13 & #14)
-  const langToggleBtn = document.getElementById('lang-dropdown-btn');
-  const langDropdownList = document.getElementById('lang-dropdown-list');
-
-  if (langToggleBtn && langDropdownList) {
-    langToggleBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      langDropdownList.classList.toggle('hidden');
-    });
-
-    document.querySelectorAll('.lang-dropdown-item').forEach(item => {
-      item.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const selectedLang = item.getAttribute('data-lang');
-        setLang(selectedLang);
-      });
-    });
-
-    document.addEventListener('click', (e) => {
-      if (!e.target.closest('#lang-dropdown-wrap')) {
-        langDropdownList.classList.add('hidden');
-      }
-    });
-  }
 }
 
 // ── 5. OCR NORMALIZATION (Req #10) ────────────────────────────
@@ -1057,6 +1094,6 @@ window.addEventListener('DOMContentLoaded', () => {
 window.pageManager = pageManager;
 window.normalizeOCRText = normalizeOCRText;
 window.findDuplicateOCR = findDuplicateOCR;
-window.setLang = setLang;
 window.t = t;
 window.switchToPage = switchToPage;
+window.scrollToPage = scrollToPage;

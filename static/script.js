@@ -88,9 +88,6 @@ canvasSection.addEventListener('touchmove', (e) => {
 }, { passive: false });
 
 // ---- UI REFS ----
-const btnDraw        = document.getElementById('fab-draw');
-const btnLasso       = document.getElementById('fab-lasso');
-const btnErase       = document.getElementById('fab-erase');
 const btnClear       = document.getElementById('btn-clear');
 const colorBtns      = document.querySelectorAll('.color-btn');
 const brushSize      = document.getElementById('brush-size');
@@ -272,18 +269,15 @@ function getIntersectingCharIndices(obj, lassoLeft, lassoRight, lassoTop, lassoB
 function setMode(mode) {
     currentMode = mode;
     const allEraseBtns = [
-        btnErase,
         document.getElementById('btn-sidebar-erase'),
         document.getElementById('btn-top-erase')
     ].filter(Boolean);
 
     const allToolBtns = [
-        btnDraw,
-        btnLasso,
         document.getElementById('btn-tool-draw'),
         document.getElementById('btn-tool-move'),
         document.getElementById('btn-tool-text'),
-        document.getElementById('btn-tool-lasso'),
+        document.getElementById('fab-lasso'),
         ...allEraseBtns
     ].filter(Boolean);
 
@@ -300,7 +294,6 @@ function setMode(mode) {
         });
         canvas.freeDrawingBrush.color = currentColor;
         canvas.freeDrawingBrush.width = parseInt(brushSize.value);
-        if (btnDraw) btnDraw.classList.add('active');
         document.getElementById('btn-tool-draw')?.classList.add('active');
         canvas.defaultCursor = 'crosshair';
         canvas.renderAll();
@@ -315,8 +308,7 @@ function setMode(mode) {
     } else if (mode === 'lasso') {
         canvas.isDrawingMode = false;
         canvas.selection = false;
-        btnLasso?.classList.add('active');
-        document.getElementById('btn-tool-lasso')?.classList.add('active');
+        document.getElementById('fab-lasso')?.classList.add('active');
         canvas.defaultCursor = 'crosshair';
     } else if (mode === 'erase') {
         canvas.isDrawingMode = true;
@@ -330,21 +322,17 @@ function setMode(mode) {
     }
 }
 
-if (btnDraw) btnDraw.addEventListener('click', () => setMode('draw'));
 document.getElementById('btn-tool-draw')?.addEventListener('click', () => setMode('draw'));
 document.getElementById('btn-tool-move')?.addEventListener('click', () => setMode('move'));
 document.getElementById('btn-tool-text')?.addEventListener('click', () => setMode('text'));
-document.getElementById('btn-tool-lasso')?.addEventListener('click', () => setMode('lasso'));
-document.getElementById('btn-sidebar-ocr')?.addEventListener('click', () => {
-    if (typeof triggerBeautifyText === 'function') triggerBeautifyText();
-});
-document.getElementById('btn-nlp-sidebar')?.addEventListener('click', () => {
-    document.getElementById('nlp-modal')?.classList.remove('hidden');
-});
+// Khoanh vùng (nút tròn): bấm lần nữa khi đang khoanh vùng thì quay về bút
+document.getElementById('fab-lasso')?.addEventListener('click', () => setMode(currentMode === 'lasso' ? 'draw' : 'lasso'));
 
 const btnSidebarErase = document.getElementById('btn-sidebar-erase');
 if (btnSidebarErase) {
     btnSidebarErase.addEventListener('click', () => {
+        // Đang khoanh vùng → xóa nét trong vùng; không thì bật/tắt cục tẩy
+        if (lastLassoCrop) { eraseLassoRegion(); return; }
         setMode(currentMode === 'erase' ? 'draw' : 'erase');
     });
 }
@@ -375,75 +363,176 @@ btnClear.addEventListener('click', () => {
     }
 });
 
-colorBtns.forEach(btn => {
-    btn.addEventListener('click', () => {
-        currentColor = btn.dataset.color;
-        colorBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        if (currentMode === 'erase') {
-            setMode('draw');
-        } else {
-            canvas.freeDrawingBrush.color = currentColor;
-        }
+// Cập nhật nút bảng màu 7 sắc + đánh dấu ô màu đang chọn
+function updateColorIndicator(color) {
+    const dot = document.getElementById('color-current-dot');
+    if (dot) dot.style.background = color;
+    const preview = document.getElementById('brush-preview');
+    if (preview) preview.style.background = color;
+    const custom = document.getElementById('color-custom-input');
+    if (custom && /^#[0-9a-f]{6}$/i.test(color)) custom.value = color;
+    document.querySelectorAll('.color-btn').forEach(b =>
+        b.classList.toggle('active', (b.dataset.color || '').toLowerCase() === (color || '').toLowerCase()));
+}
+
+function applyPenColor(color) {
+    currentColor = color;
+    updateColorIndicator(color);
+    if (currentMode === 'erase') {
+        setMode('draw');
+    } else {
+        canvas.freeDrawingBrush.color = currentColor;
+    }
+    
+    // If lasso is active, color the objects inside it
+    if (lastLassoCrop) {
+        const scaleX = canvas.width / canvasEl.clientWidth;
+        const scaleY = canvas.height / canvasEl.clientHeight;
+        const lx = lastLassoCrop.x * scaleX;
+        const ly = lastLassoCrop.y * scaleY;
+        const lw = lastLassoCrop.w * scaleX;
+        const lh = lastLassoCrop.h * scaleY;
         
-        // If lasso is active, color the objects inside it
-        if (lastLassoCrop) {
-            const scaleX = canvas.width / canvasEl.clientWidth;
-            const scaleY = canvas.height / canvasEl.clientHeight;
-            const lx = lastLassoCrop.x * scaleX;
-            const ly = lastLassoCrop.y * scaleY;
-            const lw = lastLassoCrop.w * scaleX;
-            const lh = lastLassoCrop.h * scaleY;
-            
-            const objects = canvas.getObjects();
-            let changed = false;
-            objects.forEach(obj => {
-                const bound = obj.getBoundingRect();
-                // Check if bounding box intersects with lasso region
-                if (!(bound.left > lx + lw || 
-                      bound.left + bound.width < lx || 
-                      bound.top > ly + lh || 
-                      bound.top + bound.height < ly)) {
-                    if (obj.type === 'path') {
-                        obj.set({ stroke: currentColor });
+        const objects = canvas.getObjects();
+        let changed = false;
+        objects.forEach(obj => {
+            const bound = obj.getBoundingRect();
+            // Check if bounding box intersects with lasso region
+            if (!(bound.left > lx + lw || 
+                  bound.left + bound.width < lx || 
+                  bound.top > ly + lh || 
+                  bound.top + bound.height < ly)) {
+                if (obj.type === 'path') {
+                    obj.set({ stroke: currentColor });
+                    changed = true;
+                } else if (obj.type === 'textbox' || obj.type === 'text') {
+                    const intersectLeft = Math.max(bound.left, lx);
+                    const intersectRight = Math.min(bound.left + bound.width, lx + lw);
+                    const intersectTop = Math.max(bound.top, ly);
+                    const intersectBottom = Math.min(bound.top + bound.height, ly + lh);
+                    const intersectArea = (intersectRight - intersectLeft) * (intersectBottom - intersectTop);
+                    const objArea = bound.width * bound.height;
+                    
+                    if (intersectArea / objArea > 0.8) {
+                        obj.set({ fill: currentColor });
+                        obj.styles = {}; // clear styles
                         changed = true;
-                    } else if (obj.type === 'textbox' || obj.type === 'text') {
-                        const intersectLeft = Math.max(bound.left, lx);
-                        const intersectRight = Math.min(bound.left + bound.width, lx + lw);
-                        const intersectTop = Math.max(bound.top, ly);
-                        const intersectBottom = Math.min(bound.top + bound.height, ly + lh);
-                        const intersectArea = (intersectRight - intersectLeft) * (intersectBottom - intersectTop);
-                        const objArea = bound.width * bound.height;
-                        
-                        if (intersectArea / objArea > 0.8) {
-                            obj.set({ fill: currentColor });
-                            obj.styles = {}; // clear styles
+                    } else {
+                        const indices = getIntersectingCharIndices(obj, intersectLeft, intersectRight, intersectTop, intersectBottom);
+                        if (indices.length > 0) {
+                            if (!obj.styles) obj.styles = {};
+                            indices.forEach(idx => {
+                                obj.setSelectionStyles({ fill: currentColor }, idx, idx + 1);
+                            });
                             changed = true;
-                        } else {
-                            const indices = getIntersectingCharIndices(obj, intersectLeft, intersectRight, intersectTop, intersectBottom);
-                            if (indices.length > 0) {
-                                if (!obj.styles) obj.styles = {};
-                                indices.forEach(idx => {
-                                    obj.setSelectionStyles({ fill: currentColor }, idx, idx + 1);
-                                });
-                                changed = true;
-                            }
                         }
                     }
                 }
-            });
-            
-            if (changed) {
-                canvas.renderAll();
-                saveState();
-                clearLasso(); // clear after applying color
-                return; // stay in current mode
             }
-        }
+        });
         
-        setMode('draw');
+        if (changed) {
+            canvas.renderAll();
+            saveState();
+            clearLasso(); // clear after applying color
+            return; // stay in current mode
+        }
+    }
+    
+    setMode('draw');
+}
+
+// ---- BẢNG MÀU (nút 7 sắc → popup chọn màu) ----
+const colorPaletteBtn = document.getElementById('color-palette-btn');
+const colorPalettePop = document.getElementById('color-palette-pop');
+
+function positionColorPalette() {
+    const r = colorPaletteBtn.getBoundingClientRect();
+    const popW = colorPalettePop.offsetWidth, popH = colorPalettePop.offsetHeight;
+    const left = Math.max(8, Math.min(r.left + r.width / 2 - popW / 2, window.innerWidth - popW - 8));
+    colorPalettePop.style.left = left + 'px';
+    colorPalettePop.style.top  = Math.max(8, r.top - popH - 10) + 'px';
+}
+
+function toggleColorPalette(show) {
+    const open = show ?? colorPalettePop.classList.contains('hidden');
+    colorPalettePop.classList.toggle('hidden', !open);
+    colorPaletteBtn.classList.toggle('open', open);
+    if (open) positionColorPalette();
+}
+
+colorPaletteBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleColorPalette();
+});
+
+colorBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+        applyPenColor(btn.dataset.color);
+        toggleColorPalette(false);
     });
 });
+
+// Màu tùy chọn: xem trước khi kéo, áp dụng khi chọn xong
+const colorCustomInput = document.getElementById('color-custom-input');
+colorCustomInput?.addEventListener('input', () => updateColorIndicator(colorCustomInput.value));
+colorCustomInput?.addEventListener('change', () => {
+    applyPenColor(colorCustomInput.value);
+    toggleColorPalette(false);
+});
+
+// Bấm ra ngoài / Esc / đổi kích thước cửa sổ → đóng bảng màu
+document.addEventListener('pointerdown', (e) => {
+    if (!colorPalettePop || colorPalettePop.classList.contains('hidden')) return;
+    if (e.target.closest('#color-palette-pop') || e.target.closest('#color-palette-btn')) return;
+    toggleColorPalette(false);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleColorPalette(false); });
+window.addEventListener('resize', () => toggleColorPalette(false));
+
+// ---- CỠ NÉT: bấm 1 lần vào bút = chọn bút; bấm đúp = mở ô chọn cỡ nét ----
+const penBtn = document.getElementById('btn-tool-draw');
+const brushPop = document.getElementById('brush-size-pop');
+function updateBrushPreview() {
+    const size = parseInt(brushSize.value);
+    const val = document.getElementById('brush-size-val');
+    const dot = document.getElementById('brush-preview');
+    if (val) val.textContent = size;
+    if (dot) {
+        const d = Math.max(3, size * 1.6);   // phóng to chút cho dễ nhìn
+        dot.style.width = d + 'px';
+        dot.style.height = d + 'px';
+        dot.style.background = currentColor;
+    }
+}
+function toggleBrushPop(show) {
+    if (!brushPop || !penBtn) return;
+    const open = show ?? brushPop.classList.contains('hidden');
+    brushPop.classList.toggle('hidden', !open);
+    penBtn.classList.toggle('pen-pop-open', open);
+    if (!open) return;
+    updateBrushPreview();
+    const r = penBtn.getBoundingClientRect();
+    const w = brushPop.offsetWidth, h = brushPop.offsetHeight;
+    brushPop.style.left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, window.innerWidth - w - 8)) + 'px';
+    brushPop.style.top = Math.max(8, r.top - h - 10) + 'px';
+}
+// Tự nhận bấm đúp (chạy cả với chuột lẫn màn hình cảm ứng Smart TV)
+let _penLastTap = 0;
+penBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const now = Date.now();
+    if (now - _penLastTap < 400) { toggleBrushPop(); _penLastTap = 0; }
+    else { _penLastTap = now; toggleBrushPop(false); }
+});
+document.addEventListener('pointerdown', (e) => {
+    if (!brushPop || brushPop.classList.contains('hidden')) return;
+    if (e.target.closest('#brush-size-pop') || e.target.closest('#btn-tool-draw')) return;
+    toggleBrushPop(false);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleBrushPop(false); });
+window.addEventListener('resize', () => toggleBrushPop(false));
+brushSize.addEventListener('input', updateBrushPreview);
 
 brushSize.addEventListener('input', () => {
     const val = parseInt(brushSize.value);
@@ -499,7 +588,12 @@ const canvasEl = document.getElementById('canvas-section');
 
 canvasEl.addEventListener('pointerdown', (e) => {
     if (currentMode !== 'lasso') return;
-    if (e.target.closest('.smart-widget') || e.target.closest('.lasso-actions') || e.target.closest('.floating-menu') || e.target.closest('.btn-analyze')) return;
+    if (e.target.closest('.smart-widget') || e.target.closest('.lasso-actions') || e.target.closest('.lasso-actions-pill') || e.target.closest('.floating-menu') || e.target.closest('.btn-analyze')) return;
+    // Nhấn vào bên trong vùng đã khoanh → kéo di chuyển nội dung thay vì khoanh vùng mới
+    if (lastLassoCrop && e.target.closest('.lasso-rect-overlay')) {
+        startLassoMove(e);
+        return;
+    }
     clearLasso();
 
     const rect = canvasEl.getBoundingClientRect();
@@ -519,6 +613,7 @@ canvasEl.addEventListener('pointerdown', (e) => {
 });
 
 document.addEventListener('pointermove', (e) => {
+    if (lassoMove) { moveLassoSelection(e); return; }
     if (!lassoActive) return;
     const rect = canvasEl.getBoundingClientRect();
     lassoEndX = Math.max(0, Math.min(e.clientX - rect.left, canvasEl.clientWidth));
@@ -527,95 +622,259 @@ document.addEventListener('pointermove', (e) => {
 });
 
 document.addEventListener('pointerup', (e) => {
+    if (lassoMove) { endLassoMove(); return; }
     if (!lassoActive) return;
     lassoActive = false;
+    lassoOverlay?.classList.add('movable');
+    if (lassoOverlay) lassoOverlay.title = 'Nhấn giữ và kéo để di chuyển nội dung';
 
-    const w = Math.abs(lassoEndX - lassoStartX);
-    const h = Math.abs(lassoEndY - lassoStartY);
+    let w = Math.abs(lassoEndX - lassoStartX);
+    let h = Math.abs(lassoEndY - lassoStartY);
 
     if (w < 15 || h < 15) { clearLasso(); return; }
 
-    const lx = Math.min(lassoStartX, lassoEndX);
-    const ly = Math.min(lassoStartY, lassoEndY);
+    let lx = Math.min(lassoStartX, lassoEndX);
+    let ly = Math.min(lassoStartY, lassoEndY);
+
+    // Thu gọn khung khoanh ôm sát nội dung bên trong (khoanh rộng cũng không sao)
+    const content = getContentBounds(getObjectsInLasso({ x: lx, y: ly, w, h }));
+    if (content) {
+        const PAD = 10;
+        lx = Math.max(0, content.x - PAD);
+        ly = Math.max(0, content.y - PAD);
+        w = Math.min(canvasEl.clientWidth,  content.x + content.w + PAD) - lx;
+        h = Math.min(canvasEl.clientHeight, content.y + content.h + PAD) - ly;
+        lassoStartX = lx; lassoEndX = lx + w;
+        lassoStartY = ly; lassoEndY = ly + h;
+        updateLassoOverlay();
+    }
 
     // Lưu crop data phục vụ AI nếu cần
     const dataURL = cropCanvas(lx, ly, w, h);
     lastLassoCrop = { dataURL, x: lx, y: ly, w, h };
 
-    // Tạo thanh công cụ nổi nhanh cho vùng khoanh (Nhận dạng AI, Xóa vùng, Đóng)
-    document.getElementById('lasso-actions-pill')?.remove();
-    const pill = document.createElement('div');
-    pill.id = 'lasso-actions-pill';
-    pill.className = 'lasso-actions-pill';
-
-    const pillTop = ly > 44 ? (ly - 40) : (ly + h + 8);
-    const pillLeft = Math.max(8, Math.min(lx, canvasEl.clientWidth - 260));
-    pill.style.cssText = `top:${pillTop}px;left:${pillLeft}px;`;
-
-    pill.innerHTML = `
-        <button class="lasso-pill-btn primary" id="btn-lasso-pill-ocr" title="Nhận dạng AI chữ/công thức trong vùng chọn">
-            <i class="fas fa-magic"></i> <span>Nhận dạng AI</span>
-        </button>
-        <button class="lasso-pill-btn danger" id="btn-lasso-pill-del" title="Xóa nét vẽ trong vùng chọn">
-            <i class="fas fa-trash-alt"></i> <span>Xóa vùng</span>
-        </button>
-        <button class="lasso-pill-btn close-btn" id="btn-lasso-pill-close" title="Hủy vùng chọn">
-            <i class="fas fa-times"></i>
-        </button>
-    `;
-    canvasEl.appendChild(pill);
-
-    document.getElementById('btn-lasso-pill-ocr')?.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        if (lastLassoCrop && lastLassoCrop.dataURL) {
-            sendToAI(lastLassoCrop.dataURL, 'auto_analyze');
-        }
-        clearLasso();
-    });
-
-    document.getElementById('btn-lasso-pill-del')?.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        if (lastLassoCrop) {
-            deleteInLassoArea(lastLassoCrop);
-        }
-        clearLasso();
-    });
-
-    document.getElementById('btn-lasso-pill-close')?.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        clearLasso();
-    });
+    // Không hiện thanh nút nổi: dùng ⚡/✏️ ở nút tròn để nhận dạng, nút Tẩy để xóa vùng, Esc hoặc bấm ra ngoài để hủy
 });
 
-function deleteInLassoArea(crop) {
-    if (!crop || !canvas) return;
+// Esc → hủy vùng khoanh
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && lastLassoCrop && !lassoMove) clearLasso();
+});
+
+// ---- KÉO DI CHUYỂN NỘI DUNG TRONG VÙNG KHOANH ----
+let lassoMove = null;   // trạng thái đang kéo nội dung vùng khoanh (xem startLassoMove)
+
+// Các nét/chữ có tâm nằm trong vùng khoanh (cùng tiêu chí với "Xóa vùng")
+function getObjectsInLasso(crop) {
     const scaleX = canvas.width / canvasEl.clientWidth;
     const scaleY = canvas.height / canvasEl.clientHeight;
-    const lx = crop.x * scaleX;
-    const ly = crop.y * scaleY;
-    const lw = crop.w * scaleX;
-    const lh = crop.h * scaleY;
-
-    const toRemove = canvas.getObjects().filter(obj => {
+    const lx = crop.x * scaleX, ly = crop.y * scaleY;
+    const lw = crop.w * scaleX, lh = crop.h * scaleY;
+    return canvas.getObjects().filter(obj => {
         if (!obj.visible) return false;
         const b = obj.getBoundingRect();
-        const cx = b.left + b.width / 2;
-        const cy = b.top + b.height / 2;
-        return (cx >= lx && cx <= lx + lw && cy >= ly && cy <= ly + lh);
+        const cx = b.left + b.width / 2, cy = b.top + b.height / 2;
+        return cx >= lx && cx <= lx + lw && cy >= ly && cy <= ly + lh;
     });
+}
 
-    if (toRemove.length > 0) {
-        toRemove.forEach(obj => canvas.remove(obj));
-        canvas.renderAll();
-        if (typeof saveState === 'function') saveState();
-        if (typeof showToast === 'function') {
-            showToast(`Đã xóa ${toRemove.length} nét trong vùng chọn`, 'info', 1600);
-        }
-    } else {
-        if (typeof showToast === 'function') {
-            showToast('Không có nét vẽ nào trong vùng chọn', 'warn', 1500);
+// Khung bao (đơn vị px màn hình) của một nhóm nét/chữ
+function getContentBounds(objs) {
+    if (!objs || objs.length === 0) return null;
+    const scaleX = canvas.width / canvasEl.clientWidth;
+    const scaleY = canvas.height / canvasEl.clientHeight;
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    objs.forEach(obj => {
+        const b = obj.getBoundingRect();
+        x1 = Math.min(x1, b.left); y1 = Math.min(y1, b.top);
+        x2 = Math.max(x2, b.left + b.width); y2 = Math.max(y2, b.top + b.height);
+    });
+    return { x: x1 / scaleX, y: y1 / scaleY, w: (x2 - x1) / scaleX, h: (y2 - y1) / scaleY };
+}
+
+function startLassoMove(e) {
+    const objs = getObjectsInLasso(lastLassoCrop);
+    if (objs.length === 0) {
+        showToast('Không có nét vẽ nào trong vùng chọn để di chuyển', 'warn');
+        return;
+    }
+    e.preventDefault();
+    const content = getContentBounds(objs);
+    const pageRect = canvasEl.getBoundingClientRect();
+    // Ảnh "bóng" của nội dung — hiện theo con trỏ khi kéo ra ngoài trang hiện tại
+    const ghost = document.createElement('img');
+    ghost.className = 'lasso-drag-ghost hidden';
+    ghost.src = cropCanvas(content.x, content.y, content.w, content.h);
+    ghost.style.width = content.w + 'px';
+    ghost.style.height = content.h + 'px';
+    document.body.appendChild(ghost);
+
+    lassoMove = {
+        startX: e.clientX, startY: e.clientY,
+        lastX: e.clientX, lastY: e.clientY,
+        objs: objs.map(obj => ({ obj, left: obj.left, top: obj.top })),
+        crop: { x: lastLassoCrop.x, y: lastLassoCrop.y },
+        content,
+        // Vị trí con trỏ so với góc trên-trái của phần chữ
+        grabX: e.clientX - (pageRect.left + content.x),
+        grabY: e.clientY - (pageRect.top + content.y),
+        ghost,
+        outside: false,
+        autoScrollRaf: null
+    };
+    lassoOverlay?.classList.add('moving');
+    lassoAutoScrollLoop();
+}
+
+// Trang (ô .page-slot) nằm dưới con trỏ, null nếu không trúng trang nào
+function getPageSlotAt(clientX, clientY) {
+    const el = document.elementsFromPoint(clientX, clientY).find(n => n.classList && n.classList.contains('page-slot'));
+    return el || null;
+}
+
+function setLassoOutside(outside, m = lassoMove) {
+    if (m.outside === outside) return;
+    m.outside = outside;
+    m.ghost.classList.toggle('hidden', !outside);
+    m.objs.forEach(({ obj }) => obj.set({ visible: !outside }));
+    lassoOverlay?.classList.toggle('drag-away', outside);
+    canvas.requestRenderAll();
+}
+
+function moveLassoSelection(e) {
+    const m = lassoMove;
+    m.lastX = e.clientX; m.lastY = e.clientY;
+
+    // Kéo ra khỏi trang hiện tại → hiện ảnh bóng theo con trỏ
+    const slot = getPageSlotAt(e.clientX, e.clientY);
+    const currentSlot = canvasEl.parentElement;
+    setLassoOutside(slot !== currentSlot);
+    m.ghost.style.left = (e.clientX - m.grabX) + 'px';
+    m.ghost.style.top  = (e.clientY - m.grabY) + 'px';
+
+    // Trong trang hiện tại: chỉ giữ phần CHỮ trong phạm vi trang (chữ kéo sát được tới mép)
+    const pageRect = canvasEl.getBoundingClientRect();
+    const c = m.content;
+    const wantX = e.clientX - m.grabX - pageRect.left;
+    const wantY = e.clientY - m.grabY - pageRect.top;
+    const dx = Math.max(0, Math.min(wantX, canvasEl.clientWidth  - c.w)) - c.x;
+    const dy = Math.max(0, Math.min(wantY, canvasEl.clientHeight - c.h)) - c.y;
+    const scaleX = canvas.width / canvasEl.clientWidth;
+    const scaleY = canvas.height / canvasEl.clientHeight;
+    m.objs.forEach(({ obj, left, top }) => obj.set({ left: left + dx * scaleX, top: top + dy * scaleY }));
+    canvas.requestRenderAll();
+
+    lastLassoCrop.x = m.crop.x + dx;
+    lastLassoCrop.y = m.crop.y + dy;
+    lassoStartX = lastLassoCrop.x; lassoEndX = lastLassoCrop.x + lastLassoCrop.w;
+    lassoStartY = lastLassoCrop.y; lassoEndY = lastLassoCrop.y + lastLassoCrop.h;
+    updateLassoOverlay();
+}
+
+// Kéo tới gần mép trên/dưới khung cuộn → tự cuộn để tới các trang đang khuất
+function lassoAutoScrollLoop() {
+    const m = lassoMove;
+    if (!m) return;
+    const scroller = document.getElementById('page-scroller');
+    if (scroller) {
+        const r = scroller.getBoundingClientRect();
+        const EDGE = 60;
+        let v = 0;
+        if (m.lastY < r.top + EDGE) v = -Math.ceil((r.top + EDGE - m.lastY) / 4);
+        else if (m.lastY > r.bottom - EDGE) v = Math.ceil((m.lastY - (r.bottom - EDGE)) / 4);
+        if (v !== 0) {
+            scroller.scrollTop += v;
+            moveLassoSelection({ clientX: m.lastX, clientY: m.lastY });
         }
     }
+    m.autoScrollRaf = requestAnimationFrame(lassoAutoScrollLoop);
+}
+
+function endLassoMove() {
+    const m = lassoMove;
+    lassoMove = null;
+    cancelAnimationFrame(m.autoScrollRaf);
+    m.ghost.remove();
+    lassoOverlay?.classList.remove('moving');
+
+    // Thả lên một trang khác → chuyển nội dung sang trang đó
+    const slot = getPageSlotAt(m.lastX, m.lastY);
+    if (m.outside && slot && slot !== canvasEl.parentElement && typeof pageManager !== 'undefined') {
+        const rect = slot.getBoundingClientRect();
+        moveLassoContentToPage(m, Number(slot.dataset.pageId),
+            m.lastX - m.grabX - rect.left, m.lastY - m.grabY - rect.top);
+        return;
+    }
+
+    // Thả ngoài mọi trang → trả về vị trí trong trang hiện tại
+    setLassoOutside(false, m);
+    m.objs.forEach(({ obj }) => obj.setCoords());
+    canvas.renderAll();
+    if (lastLassoCrop.x !== m.crop.x || lastLassoCrop.y !== m.crop.y) {
+        // Cập nhật lại vị trí chữ OCR đã lưu cho trang hiện tại
+        if (typeof pageManager !== 'undefined') {
+            (pageManager.getCurrentPage()?.ocrObjects || []).forEach(entry => {
+                if (entry._fabricObj && m.objs.some(o => o.obj === entry._fabricObj)) {
+                    entry.x = Math.round(entry._fabricObj.left);
+                    entry.y = Math.round(entry._fabricObj.top);
+                }
+            });
+        }
+        lastLassoCrop.dataURL = cropCanvas(lastLassoCrop.x, lastLassoCrop.y, lastLassoCrop.w, lastLassoCrop.h);
+        saveState();
+    }
+}
+
+// Chuyển các nét/chữ đang kéo sang trang khác, đặt góc trên-trái phần chữ tại (destX, destY) px của trang đích
+async function moveLassoContentToPage(m, targetPageId, destX, destY) {
+    const c = m.content;
+    destX = Math.max(0, Math.min(destX, canvasEl.clientWidth  - c.w));
+    destY = Math.max(0, Math.min(destY, canvasEl.clientHeight - c.h));
+    const scaleX = canvas.width / canvasEl.clientWidth;
+    const scaleY = canvas.height / canvasEl.clientHeight;
+    // Vị trí gốc (trước khi kéo) + độ lệch tới chỗ thả
+    const offX = (destX - c.x) * scaleX, offY = (destY - c.y) * scaleY;
+
+    const props = ['selectable', 'evented', 'data', 'id', 'hasControls', 'hasBorders',
+                   'lockScalingX', 'lockScalingY', 'lockRotation', 'hoverCursor', 'moveCursor'];
+    const jsons = m.objs.map(({ obj, left, top }) => {
+        const o = obj.toObject(props);
+        o.left = left + offX; o.top = top + offY; o.visible = true;
+        return o;
+    });
+
+    // Gỡ khỏi trang hiện tại (kèm danh sách chữ OCR của trang)
+    const srcPage = pageManager.getCurrentPage();
+    const movedSet = new Set(m.objs.map(o => o.obj));
+    const movedOcr = (srcPage.ocrObjects || []).filter(en => movedSet.has(en._fabricObj));
+    srcPage.ocrObjects = (srcPage.ocrObjects || []).filter(en => !movedSet.has(en._fabricObj));
+    m.objs.forEach(({ obj }) => canvas.remove(obj));
+    clearLasso();
+    canvas.renderAll();
+    saveState();
+
+    await window.switchToPage(targetPageId);
+
+    fabric.util.enlivenObjects(jsons, (objs) => {
+        const dstPage = pageManager.getCurrentPage();
+        dstPage.ocrObjects = dstPage.ocrObjects || [];
+        objs.forEach(obj => {
+            canvas.add(obj);
+            if (obj.data && obj.data.isOCR && typeof makeOCRTextDraggable === 'function') {
+                const entry = movedOcr.find(en => en.id === obj.data.ocrId);
+                makeOCRTextDraggable(obj, entry);
+                if (entry) {
+                    entry._fabricObj = obj;
+                    entry.x = Math.round(obj.left);
+                    entry.y = Math.round(obj.top);
+                    dstPage.ocrObjects.push(entry);
+                }
+            }
+        });
+        canvas.renderAll();
+        saveState();
+        showToast(`Đã chuyển nội dung sang Trang ${pageManager.getPageIndex() + 1}`, 'info');
+    });
 }
 
 function updateLassoOverlay() {
@@ -629,6 +888,7 @@ function updateLassoOverlay() {
 
 function clearLasso() {
     lassoActive = false;
+    lassoMove = null;
     if (lassoOverlay) { lassoOverlay.remove(); lassoOverlay = null; }
     document.getElementById('lasso-actions-pill')?.remove();
     lastLassoCrop = null;
@@ -1125,10 +1385,7 @@ function handleVoiceAgentResult(res) {
             currentColor = args.color;
             canvas.freeDrawingBrush.color = currentColor;
             
-            const colorBtns = document.querySelectorAll('.color-btn');
-            colorBtns.forEach(b => b.classList.remove('active'));
-            const matchBtn = Array.from(colorBtns).find(b => b.dataset.color === args.color);
-            if (matchBtn) matchBtn.classList.add('active');
+            updateColorIndicator(currentColor);
 
             let changed = false;
             
@@ -1414,16 +1671,10 @@ function canonicalizeFormula(raw) {
 function renderFormulaHtml(raw) {
     const f = canonicalizeFormula(raw);
     if (!f) return '';
-    // Hệ số đầu (số nguyên đứng trước chữ cái hoặc '(')
-    const withCoef = f.replace(/^(\d+)(?=[A-Z(])/i, '<b>$1</b>');
-    // Subscript: số đứng sau chữ cái, ), hoặc số khác (H2O, Ca(OH)2)
-    const withSub  = withCoef.replace(/(\d+)/g, (m, p1, offset, str) => {
-        // Không subscript hệ số đầu đã bọc trong <b>
-        const before = str.slice(0, offset);
-        if (before.endsWith('<b>') || before.endsWith('</b>')) return m;
-        return `<sub>${m}</sub>`;
-    });
-    return withSub;
+    // Chỉ số dưới: số đứng ngay sau chữ cái hoặc ')' (H2O, Ca(OH)2).
+    // Số đứng đầu / sau dấu cách, '+', '→' là hệ số (2NaOH) → giữ nguyên cỡ chữ.
+    return f.replace(/\d+/g, (m, offset, str) =>
+        /[A-Za-z)\]]/.test(str[offset - 1] || '') ? `<sub>${m}</sub>` : m);
 }
 
 /**
@@ -1471,7 +1722,9 @@ function detectMolState(formula, equation, isProduct) {
     if (raw.includes('↓')) return 'precipitate';
     if (raw.includes('↑')) return 'gas';
 
-    const f = raw.toUpperCase()
+    const f = raw
+        .replace(/[₀₁₂₃₄₅₆₇₈₉]/g, c => '0123456789'['₀₁₂₃₄₅₆₇₈₉'.indexOf(c)])   // SO₂ → SO2
+        .toUpperCase()
         .replace(/[↓↑()\s]/g, '')
         .replace(/\(AQ\)/,'').replace(/\(S\)/,'').replace(/\(L\)/,'').replace(/\(G\)/,'')
         .replace(/\(LONG\)/,'').replace(/\(DAC\)/,'');
@@ -1502,8 +1755,9 @@ function detectMolState(formula, equation, isProduct) {
     if (SOLIDS.has(f)) return 'solid';
 
     // Common gases
+    // (HCl không nằm đây: trong phòng thí nghiệm thường dùng dung dịch axit HCl)
     const GASES = new Set(['H2','O2','CL2','CO2','CO','SO2','SO3','NO','NO2','NH3',
-                           'H2S','HCL','HF','HBR','HI','N2','F2','CH4','C2H4','C2H2',
+                           'H2S','HF','HBR','HI','N2','F2','CH4','C2H4','C2H2',
                            'C2H6','N2O','NO','CLO2','O3','RADON']);
     if (GASES.has(f)) return 'gas';
 
@@ -2134,68 +2388,15 @@ function buildChemWidget(data) {
         }
     };
     const sc = safetyConfig[safety.level] || safetyConfig.safe;
-    // collapseByDefault khai báo ở đây để safetyBannerHtml có thể dùng ngay bín dưới
-    const collapseByDefault = safety.level === 'safe' && !safety.theory;
-
-    // ── Build blocks từ Layer 2+3 data ────────────────────────
-    const warningsHtml = (safety.warnings || []).length > 0
-        ? `<ul class="safety-warnings-list">${safety.warnings.map(w => `<li>${escHtml(w)}</li>`).join('')}</ul>`
-        : '';
-
-    const alternativeHtml = safety.safe_alternative && safety.safe_alternative !== 'null'
-        ? `<div class="safety-alternative">🔬 <b>Thay thế an toàn:</b> ${escHtml(safety.safe_alternative)}</div>`
-        : '';
-
-    const mechanismHtml = safety.mechanism
-        ? `<div class="safety-mechanism">⚡ <b>Cơ chế:</b> ${escHtml(safety.mechanism)}</div>`
-        : '';
-
-    const theoryHtml = safety.theory
-        ? `<div class="safety-theory">📚 <b>Lý thuyết:</b> ${escHtml(safety.theory)}</div>`
-        : '';
-
-    const applicationsHtml = safety.applications
-        ? `<div class="safety-applications">🏭 <b>Ứng dụng:</b> ${escHtml(safety.applications)}</div>`
-        : '';
-
-    const funFactHtml = safety.fun_fact
-        ? `<div class="safety-funfact">💡 ${escHtml(safety.fun_fact)}</div>`
-        : '';
-
-    const studentNoteHtml = safety.student_note
-        ? `<div class="safety-student-note">📝 ${escHtml(safety.student_note)}</div>`
-        : '';
-
-    // Badge: loại phản ứng + cấp học
-    const curriculumBadge = safety._curriculum === 'university' ? '🎓 Đại học' : '📖 THPT';
-    const reactionBadge = safety.reaction_type_label || '';
-    const badgesHtml = (reactionBadge || curriculumBadge) ? `
-        <div class="safety-badges">
-            ${reactionBadge ? `<span class="safety-badge-tag">${escHtml(reactionBadge)}</span>` : ''}
-            <span class="safety-badge-tag safety-badge-curriculum">${curriculumBadge}</span>
-        </div>` : '';
-
-    // ── Safety Banner HTML ─────────────────────────────────────
+    // ── Safety Banner: chỉ một thanh mức an toàn (AN TOÀN / THẬN TRỌNG / NGUY HIỂM) ──
+    // Đã bỏ phần giải thích dài (cơ chế, lý thuyết, ứng dụng...) theo yêu cầu.
+    // Phản ứng nguy hiểm vẫn có cảnh báo toàn màn hình (showRedAlertShield) ở trên.
     const safetyBannerHtml = `
-        <div class="safety-banner ${sc.pulse ? 'safety-pulse' : ''} ${collapseByDefault ? 'safety-collapsed' : ''}"
+        <div class="safety-banner safety-collapsed ${sc.pulse ? 'safety-pulse' : ''}"
              style="background:${sc.bg};border-left:4px solid ${sc.border};">
-            <div class="safety-header">
+            <div class="safety-header" style="cursor:default;">
                 <span class="safety-icon">${sc.icon}</span>
                 <span class="safety-label">${sc.label}</span>
-                <button class="safety-toggle" onclick="this.closest('.safety-banner').classList.toggle('safety-collapsed')">▼</button>
-            </div>
-            <div class="safety-body">
-                ${badgesHtml}
-                <p class="safety-reason">${escHtml(safety.summary || safety.reason)}</p>
-                ${mechanismHtml}
-                ${warningsHtml}
-                ${alternativeHtml}
-                <div class="safety-edu-grid">
-                    ${theoryHtml}
-                    ${applicationsHtml}
-                </div>
-                ${studentNoteHtml}
-                ${funFactHtml}
             </div>
         </div>
     `;
@@ -2209,9 +2410,7 @@ function buildChemWidget(data) {
     const cW = canvasSection.clientWidth || window.innerWidth || 1200;
     const W = Math.min(940, cW - 40);
     const leftPos = Math.max(20, Math.round((cW - W) / 2));
-    const H = collapseByDefault ? 220 : 'auto';
-    const hStr = typeof H === 'number' ? H + 'px' : H;
-    widget.style.cssText = `width:${W}px;height:${hStr};left:${leftPos}px;top:40px;min-height:220px;`;
+    widget.style.cssText = `width:${W}px;height:auto;left:${leftPos}px;top:40px;min-height:220px;`;
 
     // ── Equation info bar: hiển thị phương trình + khái niệm ─────
     // Áp dụng canonicalizeEquation trước khi render
@@ -2222,7 +2421,6 @@ function buildChemWidget(data) {
                 <span class="cw-eq-icon">🧪</span>
                 <span class="cw-eq-formula">${renderFormulaHtml(cleanEquation)}</span>
             </div>
-            ${note ? `<div class="cw-eq-concept">${escHtml(note)}</div>` : ''}
         </div>
     ` : '';
 
@@ -2244,6 +2442,9 @@ function buildChemWidget(data) {
         <div class="widget-header">
             <span class="widget-title">⚗ Phản ứng Hóa học 3D</span>
             <div style="display:flex;align-items:center;gap:8px;">
+                <button class="cw-expand-btn" id="cw-expand-${wid}" title="Phóng to để xem rõ phản ứng (Esc để thu nhỏ)">
+                    <i class="fas fa-expand"></i> <span>Phóng to</span>
+                </button>
                 <button class="cw-sound-toggle-btn ${ChemicalSoundSynthesizer.isMuted() ? 'muted' : ''}" id="cw-sound-${wid}" title="Bật/Tắt âm thanh phản ứng">
                     <span class="sound-icon">${ChemicalSoundSynthesizer.isMuted() ? '🔇' : '🔊'}</span>
                     <span class="sound-txt">${ChemicalSoundSynthesizer.isMuted() ? 'Đã tắt' : 'Âm thanh'}</span>
@@ -2263,7 +2464,7 @@ function buildChemWidget(data) {
                         const st = STATE_CFG[detectMolState(r, equation, false)];
                         return `
                         <div class="cw-mol-card">
-                            <div class="cw-mol-view" id="rv${i}${wid}"
+                            <div class="cw-mol-view" id="rv${i}${wid}" data-formula="${escHtml(r)}"
                                  style="box-shadow:${st.glow};border-color:${st.border};"></div>
                             <div class="cw-mol-tag">${renderFormulaHtml(r)}</div>
                             <div class="mol-state-badge ${st.badgeCls}">${st.dot} ${st.label}</div>
@@ -2277,8 +2478,8 @@ function buildChemWidget(data) {
             <div class="cw-mid">
                 <div class="cw-big-arrow" id="cw-arrow-${wid}">
                     <span class="cw-arrow-sym">→</span>
-                    ${conditions.length > 0 ? `<div class="cw-conditions-badge">${conditions.map(c => `<span class="cw-cond-tag">${escHtml(c)}</span>`).join('')}</div>` : ''}
-                    ${catalyst ? `<div class="cw-catalyst-label"><span class="cw-cat-icon">⚡</span>${escHtml(catalyst)}</div>` : ''}
+                    ${conditions.filter(c => c !== catalyst).length > 0 ? `<div class="cw-conditions-badge">${conditions.filter(c => c !== catalyst).map(c => `<span class="cw-cond-tag">${escHtml(c)}</span>`).join('')}</div>` : ''}
+                    ${catalyst ? `<div class="cw-catalyst-label" title="Chất xúc tác"><span class="cw-cat-icon">⚡</span>Xúc tác: ${escHtml(catalyst)}</div>` : `<div class="cw-catalyst-label cw-no-catalyst">Không cần xúc tác</div>`}
                 </div>
                 <button class="cw-play-btn" id="cw-play-${wid}">▶ Xem phản ứng</button>
                 <button class="cw-replay-btn hidden" id="cw-replay-${wid}">🔄 Làm lại</button>
@@ -2292,7 +2493,7 @@ function buildChemWidget(data) {
                         const st = STATE_CFG[detectMolState(p, equation, true)];
                         return `
                         <div class="cw-mol-card">
-                            <div class="cw-mol-view cw-prod-view" id="pv${i}${wid}"
+                            <div class="cw-mol-view cw-prod-view" id="pv${i}${wid}" data-formula="${escHtml(p)}"
                                  style="box-shadow:${st.glow};border-color:${st.border};"></div>
                             <div class="cw-mol-tag" style="color:var(--green);">${renderFormulaHtml(p)}</div>
                             <div class="mol-state-badge ${st.badgeCls}">${st.dot} ${st.label}</div>
@@ -2313,66 +2514,23 @@ function buildChemWidget(data) {
             </button>
         </div>
 
-        <!-- === MOL VARIANTS SECTION === -->
-        ${molVariants.length > 0 ? `
-        <div class="cw-mol-variants">
-            <div class="cmv-header">
-                <span class="cmv-icon">⚖️</span>
-                <span class="cmv-title">Sản phẩm thay đổi theo tỉ lệ mol</span>
-                <span class="cmv-badge">${molVariants.length} trường hợp</span>
-            </div>
-            <div class="cmv-list">
-                ${molVariants.map((v, i) => `
-                <div class="cmv-card" onclick="this.classList.toggle('cmv-expanded')">
-                    <div class="cmv-card-header">
-                        <span class="cmv-case-num">TH${i+1}</span>
-                        <span class="cmv-condition">${escHtml(v.condition || '')}</span>
-                        ${v.ratio_rule ? `<span class="cmv-ratio">${escHtml(v.ratio_rule)}</span>` : ''}
-                        <span class="cmv-expand-icon">▼</span>
-                    </div>
-                    <div class="cmv-card-body">
-                        <div class="cmv-eq">🔬 ${escHtml(v.equation || '')}</div>
-                        ${v.note ? `<div class="cmv-note">${escHtml(v.note)}</div>` : ''}
-                        <div class="cmv-products">Sản phẩm: ${(v.products||[]).map(p => `<span class="cmv-prod-tag">${escHtml(p)}</span>`).join(' + ')}</div>
-                    </div>
-                </div>`).join('')}
-            </div>
-        </div>` : ''}
 
-        <!-- === MOL INPUT PANEL === -->
-        <div class="cw-mol-panel" id="mol-panel-${wid}">
+        <!-- === THÍ NGHIỆM ẢO: thay đổi lượng chất & xúc tác (virtual_lab.js) === -->
+        <div class="cw-mol-panel cw-lab-panel" id="lab-${wid}">
             <div class="cmp-header">
-                <span class="cmp-icon">🧮</span>
-                <span class="cmp-title">Tính toán lượng chất theo phương trình</span>
-                <button class="cmp-toggle" onclick="document.getElementById('mol-inputs-${wid}').classList.toggle('hidden')">Mở rộng ▼</button>
+                <span class="cmp-icon">🎛️</span>
+                <span class="cmp-title">Thí nghiệm ảo — thay đổi lượng chất &amp; xúc tác</span>
+                <button class="cmp-toggle" id="lab-toggle-${wid}">Mở rộng ▼</button>
             </div>
-            <div class="mol-inputs hidden" id="mol-inputs-${wid}">
-                <div class="mol-mode-selector">
-                    <button class="mol-mode-btn active" id="mode-mol-${wid}" onclick="setCalcMode('${wid}', 'mol')">Theo số mol (mol)</button>
-                    <button class="mol-mode-btn" id="mode-mass-${wid}" onclick="setCalcMode('${wid}', 'mass')">Theo khối lượng (gam)</button>
-                </div>
-                <div class="mol-inputs-grid">
-                    ${reactants.map(r => `
-                    <div class="mol-input-row">
-                        <label class="mol-input-label">${escHtml(r)}</label>
-                        <input type="number" class="mol-input-field" id="mol-${r}-${wid}"
-                               placeholder="Nhập giá trị" min="0" step="any"
-                               title="Nhập lượng chất của ${r}">
-                        <span class="mol-input-unit" id="unit-${r}-${wid}">mol</span>
-                    </div>`).join('')}
-                </div>
-                <div class="mol-actions">
-                    <button class="mol-calc-btn" id="mol-calc-btn-${wid}">
-                        ⚡ Tính toán chi tiết (Mol, Gam, Khí)
-                    </button>
-                </div>
-                <div class="mol-result" id="mol-result-${wid}"></div>
-            </div>
+            <div class="lab-body hidden" id="lab-body-${wid}"></div>
         </div>
     `;
 
     canvasSection.appendChild(widget);
     makeWidgetDraggable(widget);
+    if (typeof initVirtualLab === 'function') {
+        initVirtualLab(wid, { equation: cleanEquation || equation, reactants, products, catalyst, conditions });
+    }
 
     // Gắn sự kiện tính toán bằng addEventListener trực tiếp — Không bao giờ bị lỗi nháy kép HTML
     const calcBtn = document.getElementById(`mol-calc-btn-${wid}`);
@@ -2440,6 +2598,37 @@ function buildChemWidget(data) {
         setTimeout(() => document.getElementById(`cw-play-${wid}`)?.classList.remove('hidden'), 500);
     });
 
+    // Phóng to / thu nhỏ để xem rõ phản ứng — vẽ lại mô hình 3D theo kích thước mới cho nét
+    const expandBtn = document.getElementById(`cw-expand-${wid}`);
+    // Vẽ lại theo công thức đang gắn trên từng ô (thẻ sản phẩm có thể đã đổi do Thí nghiệm ảo)
+    const rerenderVisuals = () => {
+        widget.querySelectorAll('.cw-mol-view[data-formula]').forEach(v => renderChemVisual(v.dataset.formula, v));
+    };
+    const sizeViews = (expanded) => {
+        [`cw-left-${wid}`, `cw-right-${wid}`].forEach(sideId => {
+            const side = document.getElementById(sideId);
+            if (!side) return;
+            const views = side.querySelectorAll('.cw-mol-view');
+            let size = '';
+            if (expanded && views.length) {
+                const bodyH = side.clientHeight;
+                const sideW = side.clientWidth - 60;
+                size = Math.floor(Math.min(bodyH * 0.62, (sideW - (views.length - 1) * 95) / views.length, 380)) + 'px';
+            }
+            views.forEach(v => { v.style.width = size; v.style.height = size; });
+        });
+    };
+    expandBtn?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const expanded = !widget.classList.contains('cw-expanded');
+        widget.classList.toggle('cw-expanded', expanded);
+        expandBtn.querySelector('i').className = expanded ? 'fas fa-compress' : 'fas fa-expand';
+        expandBtn.querySelector('span').textContent = expanded ? 'Thu nhỏ' : 'Phóng to';
+        expandBtn.title = expanded ? 'Thu nhỏ lại (Esc)' : 'Phóng to để xem rõ phản ứng (Esc để thu nhỏ)';
+        // Chờ layout cập nhật rồi mới đo & vẽ lại
+        requestAnimationFrame(() => requestAnimationFrame(() => { sizeViews(expanded); rerenderVisuals(); }));
+    });
+
     // Cleanup on close to prevent extreme lag
     widget.querySelector('.widget-close').addEventListener('click', () => {
         ChemicalSoundSynthesizer.stop();
@@ -2451,6 +2640,34 @@ function buildChemWidget(data) {
 
     // SPEED OPT: Trả về wid để sendToAI có thể patch pedagogy sau
     return wid;
+}
+
+// Dựng lại các thẻ sản phẩm (dùng khi sản phẩm đổi theo tỉ lệ mol trong Thí nghiệm ảo)
+function renderProductCards(wid, products, equation) {
+    const wrap = document.querySelector(`#cw-right-${wid} .cw-mols-wrap`);
+    if (!wrap) return;
+    wrap.querySelectorAll('.cw-mol-view').forEach(v => { if (window.stopChemAnim) stopChemAnim(v.id); });
+    // Giữ kích thước ô khi bảng đang phóng to
+    const sample = document.querySelector(`#cw-left-${wid} .cw-mol-view`);
+    let size = sample && sample.style.width ? `width:${sample.style.width};height:${sample.style.height};` : '';
+    // Nhiều sản phẩm ở cỡ thường → thu nhỏ thẻ cho vừa, không phải cuộn ngang
+    if (!size && products.length >= 3) size = 'width:108px;height:108px;';
+    wrap.innerHTML = products.map((p, i) => {
+        const st = STATE_CFG[detectMolState(p, equation, true)];
+        return `
+        <div class="cw-mol-card">
+            <div class="cw-mol-view cw-prod-view" id="pv${i}${wid}" data-formula="${escHtml(p)}"
+                 style="box-shadow:${st.glow};border-color:${st.border};${size}"></div>
+            <div class="cw-mol-tag" style="color:var(--green);">${renderFormulaHtml(p)}</div>
+            <div class="mol-state-badge ${st.badgeCls}">${st.dot} ${st.label}</div>
+        </div>
+        ${i < products.length - 1 ? '<span class="cw-plus">+</span>' : ''}`;
+    }).join('');
+    // Bảng có thể đã bị đóng trước khung hình kế tiếp → bỏ qua ô không còn tồn tại
+    requestAnimationFrame(() => products.forEach((p, i) => {
+        const el = document.getElementById(`pv${i}${wid}`);
+        if (el) renderChemVisual(p, el);
+    }));
 }
 
 function playChemAnim(wid, soundType = 'none') {
@@ -3216,6 +3433,28 @@ function createWidget(wid, title, w, h, left, top) {
     return widget;
 }
 
+// Đóng widget ngay khi nhấn xuống nút ✕ (capture phase) — không để canvas/kéo thả nuốt mất sự kiện click
+document.addEventListener('pointerdown', (e) => {
+    const btn = e.target.closest && e.target.closest('.smart-widget .widget-close');
+    if (!btn || e.button > 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    btn.click();
+}, true);
+
+// Phím Esc: đóng widget nằm trên cùng
+document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const expanded = document.querySelector('.smart-widget.cw-expanded .cw-expand-btn');
+    if (expanded) { expanded.click(); return; }
+    const widgets = [...document.querySelectorAll('.smart-widget')];
+    if (widgets.length === 0) return;
+    const top = widgets.reduce((a, b) =>
+        (parseInt(getComputedStyle(b).zIndex) || 0) >= (parseInt(getComputedStyle(a).zIndex) || 0) ? b : a);
+    const btn = top.querySelector('.widget-close');
+    if (btn) btn.click(); else top.remove();
+});
+
 function makeWidgetDraggable(widget) {
     const header = widget.querySelector('.widget-header, .tv-nlp-header');
     if (!header) return;
@@ -3292,6 +3531,9 @@ function setLoading(visible, msg = '') {
 }
 
 function showToast(msg, type = 'info') {
+    // Đã tắt toàn bộ thông báo nổi theo yêu cầu (chỉ ghi ra console để debug)
+    console.log(`[toast:${type}] ${msg}`);
+    return;
     const t = document.createElement('div');
     t.style.cssText = `position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
         background:${type==='error'?'#ef4444':type==='warn'?'#f59e0b':'#3b82f6'};
@@ -3314,18 +3556,10 @@ function escHtml(s) {
 const floatingMenu = document.getElementById('floating-menu');
 const floatingMainBtn = document.getElementById('floating-main-btn');
 
-// Wiring FAB actions
-document.getElementById('fab-draw')?.addEventListener('click', () => {
-    setMode('draw');
-    floatingMenu?.classList.remove('active');
-});
+// Wiring FAB actions — menu chỉ mở/đóng khi bấm nút (+), chọn chức năng con không tự thu menu lại
 
-document.getElementById('fab-lasso')?.addEventListener('click', () => {
-    setMode('lasso');
-    floatingMenu?.classList.remove('active');
-});
-
-document.getElementById('fab-erase').addEventListener('click', () => {
+// Xóa các nét/chữ nằm trong vùng đang khoanh (dùng cho nút Tẩy khi có vùng chọn)
+function eraseLassoRegion() {
     if (lastLassoCrop) {
         const scaleX = canvas.width / canvasEl.clientWidth;
         const scaleY = canvas.height / canvasEl.clientHeight;
@@ -3380,10 +3614,8 @@ document.getElementById('fab-erase').addEventListener('click', () => {
             if (typeof saveState === 'function') saveState();
         }
         clearLasso();
-    } else {
-        setMode('erase');
     }
-});
+}
 
 document.getElementById('fab-analyze').addEventListener('click', () => {
     if (lastLassoCrop) {
@@ -3449,7 +3681,6 @@ document.getElementById('fab-tts').addEventListener('click', () => {
         }
         
         clearLasso();
-        floatingMenu.classList.remove('active');
     } else {
         showToast('Vui lòng khoanh vùng văn bản trước!', 'warn');
     }
@@ -3707,9 +3938,31 @@ function quizShowScreen(screenId) {
     document.getElementById(screenId).classList.remove('hidden');
 }
 
+// Thông báo ngay trong cửa sổ Quiz (thông báo nổi đã tắt nên lỗi phải hiện tại đây)
+function quizSetupMessage(msg) {
+    const el = document.getElementById('quiz-setup-msg');
+    if (!el) return;
+    el.textContent = msg || '';
+    el.classList.toggle('hidden', !msg);
+}
+
+// Quiz chỉ tạo từ PHẦN ĐÃ KHOANH VÙNG: trả về lý do chưa tạo được, hoặc '' nếu sẵn sàng
+function quizBlockReason() {
+    if (!lastLassoCrop) {
+        return '⭕ Hãy dùng nút Khoanh vùng (trong nút tròn) để khoanh phần nội dung cần tạo Quiz, rồi bấm Tạo Quiz.';
+    }
+    if (typeof getObjectsInLasso === 'function' && getObjectsInLasso(lastLassoCrop).length === 0) {
+        return '✏️ Vùng khoanh đang trống — hãy khoanh đúng phần có phương trình hoặc nội dung hóa học.';
+    }
+    return '';
+}
+
 function quizOpenModal() {
     quizModal.classList.remove('hidden');
     quizShowScreen('quiz-setup-screen');
+    const reason = quizBlockReason();
+    document.getElementById('quiz-start-btn').disabled = !!reason;
+    quizSetupMessage(reason);
 }
 
 function quizCloseModal() {
@@ -3729,9 +3982,6 @@ document.querySelectorAll('.quiz-num-btn').forEach(btn => {
 const fabQuiz = document.getElementById('fab-quiz');
 if (fabQuiz) {
     fabQuiz.addEventListener('click', () => {
-        const floatingItems = document.getElementById('floating-menu-items');
-        if (floatingItems) floatingItems.classList.remove('open');
-        floatingMenu.classList.remove('active');
         quizOpenModal();
     });
 }
@@ -3739,15 +3989,14 @@ if (fabQuiz) {
 const fabNlp = document.getElementById('fab-nlp');
 if (fabNlp) {
     fabNlp.addEventListener('click', () => {
-        const floatingItems = document.getElementById('floating-menu-items');
-        if (floatingItems) floatingItems.classList.remove('open');
-        floatingMenu.classList.remove('active');
         nlpOpenModal();
     });
 }
 
 // ---- Start Quiz ----
 document.getElementById('quiz-start-btn').addEventListener('click', () => {
+    if (quizBlockReason()) { quizOpenModal(); return; }
+    quizSetupMessage('');
     quizShowScreen('quiz-loading-screen');
     quizLoadingLog.textContent = '';
     quizState.answers = {};
@@ -3793,13 +4042,9 @@ const QUIZ_CATEGORY_LABELS = {
 };
 
 function startQuizGeneration() {
-    // Lấy ảnh bảng: ưu tiên vùng Lasso nếu có, không thì dùng toàn bộ bảng
-    let imageData = null;
-    if (lastLassoCrop && lastLassoCrop.dataURL) {
-        imageData = lastLassoCrop.dataURL;
-    } else {
-        imageData = getCanvasImageData(); // dùng hàm chuẩn, resize 1280px
-    }
+    // Chỉ gửi ảnh PHẦN ĐÃ KHOANH VÙNG (không dùng toàn bộ bảng)
+    if (!lastLassoCrop || !lastLassoCrop.dataURL) { quizOpenModal(); return; }
+    const imageData = lastLassoCrop.dataURL;
 
     const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${wsProto}://${location.host}/ws/analyze`);
@@ -3826,8 +4071,8 @@ function startQuizGeneration() {
             ws.close();
 
             if (quizState.questions.length === 0) {
-                showToast('AI không tạo được câu hỏi. Hãy viết rõ hơn!', 'error');
                 quizShowScreen('quiz-setup-screen');
+                quizSetupMessage('⚠️ AI không tìm thấy nội dung hóa học rõ ràng trên bảng để tạo câu hỏi. Hãy viết rõ phương trình hoặc khoanh vùng nội dung rồi thử lại.');
                 return;
             }
 
@@ -3839,14 +4084,14 @@ function startQuizGeneration() {
 
         if (msg.type === 'error') {
             ws.close();
-            showToast(msg.message || 'Lỗi khi tạo quiz!', 'error');
             quizShowScreen('quiz-setup-screen');
+            quizSetupMessage('⚠️ ' + (msg.message || 'Lỗi khi tạo Quiz, hãy thử lại.'));
         }
     };
 
     ws.onerror = () => {
-        showToast('Lỗi kết nối WebSocket!', 'error');
         quizShowScreen('quiz-setup-screen');
+        quizSetupMessage('⚠️ Không kết nối được tới server. Kiểm tra server đang chạy rồi thử lại.');
     };
 }
 
@@ -4014,12 +4259,6 @@ function showQuizResult() {
     });
 
     quizShowScreen('quiz-result-screen');
-}
-
-// ---- Nút Quiz ở Sidebar (luôn hiển thị, không cần mở floating menu) ----
-const btnQuizSidebar = document.getElementById('btn-quiz-sidebar');
-if (btnQuizSidebar) {
-    btnQuizSidebar.addEventListener('click', () => quizOpenModal());
 }
 
 // ---- Top App Bar Actions (Luôn hiển thị trên cùng màn hình) ----
