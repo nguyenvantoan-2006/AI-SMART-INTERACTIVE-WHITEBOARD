@@ -416,7 +416,7 @@ function onPageScroll() {
   clearTimeout(_scrollTimer);
   _scrollTimer = setTimeout(() => {
     // Đang kéo nội dung vùng khoanh giữa các trang → chưa đổi trang làm việc
-    if (typeof lassoMove !== 'undefined' && lassoMove) { onPageScroll(); return; }
+    if ((typeof lassoMove !== 'undefined' && lassoMove) || window.__clipDragging) { onPageScroll(); return; }
     const id = getMostVisiblePageId();
     if (id !== pageManager.currentPageId) switchToPage(id);
   }, 140);
