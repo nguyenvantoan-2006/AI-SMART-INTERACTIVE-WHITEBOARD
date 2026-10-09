@@ -1172,15 +1172,10 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
 
         } else if (data.type === 'result_nlp_chemistry') {
             // NLP chemistry result — render trên bảng Smart TV hoặc qua popup
-            if (window._nlpWs) { window._nlpWs = null; }
+            // (Đề bài viết tay trên bảng → hiển thị bảng lời giải lên bảng)
             ws.close();
             setLoading(false);
-            if (data.is_handwritten) {
-                buildNlpProblemWidget(data);
-                showToast('Đã giải bài toán Hóa học viết tay!', 'success');
-            } else {
-                nlpRenderResult(data);
-            }
+            buildNlpProblemWidget(data);
 
         } else {
             ws.close();
@@ -3978,7 +3973,7 @@ document.querySelectorAll('.quiz-num-btn').forEach(btn => {
     });
 });
 
-// ---- FAB Buttons: Quiz & NLP ----
+// ---- FAB Button: Quiz ----
 const fabQuiz = document.getElementById('fab-quiz');
 if (fabQuiz) {
     fabQuiz.addEventListener('click', () => {
@@ -3986,12 +3981,6 @@ if (fabQuiz) {
     });
 }
 
-const fabNlp = document.getElementById('fab-nlp');
-if (fabNlp) {
-    fabNlp.addEventListener('click', () => {
-        nlpOpenModal();
-    });
-}
 
 // ---- Start Quiz ----
 document.getElementById('quiz-start-btn').addEventListener('click', () => {
@@ -4284,10 +4273,6 @@ if (btnTopAnalyze) {
     });
 }
 
-const btnTopNlp = document.getElementById('btn-top-nlp');
-if (btnTopNlp) {
-    btnTopNlp.addEventListener('click', () => nlpOpenModal());
-}
 
 // ---- Top App Bar Toggle (Thu gọn / Mở rộng thanh đỉnh) ----
 const topBar = document.getElementById('top-app-bar');
@@ -4365,234 +4350,3 @@ if (btnSidebarFullscreen) {
     btnSidebarFullscreen.addEventListener('click', toggleFullscreen);
 }
 
-// ============================================================
-//  NLP CHEMISTRY MODULE
-// ============================================================
-const NLP_EXAMPLES = [
-    "Hoa tan 4.48 lit khi CO2 (dktc) vao 300ml dung dich NaOH 1M. Tinh khoi luong cac muoi tao thanh.",
-    "Cho 5.6 gam sat tac dung voi dung dich HNO3 loang du. Tinh the tich khi NO thoat ra (dktc).",
-    "Phan huy 3.4 gam H2O2 voi xuc tac MnO2. Tinh the tich khi O2 thu duoc (dktc).",
-    "Tong hop NH3 tu 14 gam N2 va 4 gam H2 (xuc tac Fe, 450C, hieu suat 25%). Tinh khoi luong NH3."
-];
-
-let _nlpCurrentResult = null;
-let _nlpWs = null;
-let nlpRecognition = null;
-let isNlpRecording = false;
-let nlpSilenceTimer = null;
-
-function nlpOpenModal() {
-    document.getElementById('nlp-modal').classList.remove('hidden');
-    nlpShowScreen('nlp-input-screen');
-    setTimeout(() => document.getElementById('nlp-text-input')?.focus(), 100);
-}
-function nlpCloseModal() {
-    stopNlpVoiceInput();
-    document.getElementById('nlp-modal').classList.add('hidden');
-    if (_nlpWs && _nlpWs.readyState <= 1) _nlpWs.close();
-    _nlpWs = null;
-}
-function nlpGoBack() { nlpShowScreen('nlp-input-screen'); }
-function nlpShowScreen(id) {
-    ['nlp-input-screen','nlp-loading-screen','nlp-result-screen'].forEach(s => {
-        const el = document.getElementById(s);
-        if (el) el.classList.toggle('hidden', s !== id);
-    });
-}
-function nlpFillExample(idx) {
-    const ta = document.getElementById('nlp-text-input');
-    if (ta) { ta.value = NLP_EXAMPLES[idx] || ''; ta.focus(); }
-}
-
-// ── GIỌNG NÓI: Nhận diện giọng nói giáo viên đọc đề bài vào ô nhập ──
-function toggleNlpVoiceInput() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-        showToast('Trình duyệt của bạn không hỗ trợ nhận diện giọng nói (Web Speech API).', 'warn');
-        return;
-    }
-
-    if (isNlpRecording) {
-        stopNlpVoiceInput();
-    } else {
-        startNlpVoiceInput();
-    }
-}
-
-function startNlpVoiceInput() {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    try {
-        nlpRecognition = new SpeechRecognition();
-        nlpRecognition.lang = 'vi-VN';
-        nlpRecognition.continuous = true;
-        nlpRecognition.interimResults = true;
-
-        const ta = document.getElementById('nlp-text-input');
-        const micBtn = document.getElementById('nlp-mic-btn');
-        const innerMicBtn = document.getElementById('nlp-textarea-mic-btn');
-        const statusBox = document.getElementById('nlp-voice-status');
-        const statusText = document.getElementById('nlp-voice-status-text');
-        const micBtnText = document.getElementById('nlp-mic-btn-text');
-
-        let initialVal = ta ? ta.value.trim() : '';
-        let recognizedText = "";
-
-        nlpRecognition.onstart = () => {
-            isNlpRecording = true;
-            micBtn?.classList.add('recording');
-            innerMicBtn?.classList.add('recording');
-            statusBox?.classList.remove('hidden');
-            if (micBtnText) micBtnText.textContent = 'Đang nghe... (Bấm để dừng)';
-            if (statusText) statusText.textContent = '🔴 Đang lắng nghe giáo viên nói... Hãy đọc câu hỏi hoặc đề bài!';
-            showToast('Micro đang bật! Hãy đọc đề bài hoặc câu hỏi...', 'info');
-
-            clearTimeout(nlpSilenceTimer);
-            nlpSilenceTimer = setTimeout(() => {
-                if (isNlpRecording && !recognizedText) {
-                    stopNlpVoiceInput();
-                }
-            }, 6000);
-        };
-
-        nlpRecognition.onresult = (event) => {
-            let interim = '';
-            for (let i = event.resultIndex; i < event.results.length; ++i) {
-                if (event.results[i].isFinal) {
-                    recognizedText += event.results[i][0].transcript + ' ';
-                } else {
-                    interim += event.results[i][0].transcript;
-                }
-            }
-
-            if (ta) {
-                const combined = (initialVal ? initialVal + ' ' : '') + recognizedText + interim;
-                ta.value = combined;
-                ta.scrollTop = ta.scrollHeight;
-            }
-
-            clearTimeout(nlpSilenceTimer);
-            nlpSilenceTimer = setTimeout(() => {
-                if (isNlpRecording) {
-                    stopNlpVoiceInput();
-                }
-            }, 2000); // 2s yên lặng tự động dừng
-        };
-
-        nlpRecognition.onerror = (event) => {
-            console.warn('[NLP Voice Error]:', event.error);
-            if (event.error !== 'no-speech') {
-                showToast('Lỗi micro: ' + event.error, 'error');
-            }
-            stopNlpVoiceInput();
-        };
-
-        nlpRecognition.onend = () => {
-            stopNlpVoiceInput();
-        };
-
-        nlpRecognition.start();
-    } catch (e) {
-        console.error('[NLP Voice Start Error]:', e);
-        showToast('Không thể kích hoạt micro: ' + e.message, 'error');
-        stopNlpVoiceInput();
-    }
-}
-
-function stopNlpVoiceInput() {
-    isNlpRecording = false;
-    clearTimeout(nlpSilenceTimer);
-    try {
-        if (nlpRecognition) {
-            nlpRecognition.stop();
-            nlpRecognition = null;
-        }
-    } catch (e) {}
-
-    const micBtn = document.getElementById('nlp-mic-btn');
-    const innerMicBtn = document.getElementById('nlp-textarea-mic-btn');
-    const statusBox = document.getElementById('nlp-voice-status');
-    const micBtnText = document.getElementById('nlp-mic-btn-text');
-
-    micBtn?.classList.remove('recording');
-    innerMicBtn?.classList.remove('recording');
-    statusBox?.classList.add('hidden');
-    if (micBtnText) micBtnText.textContent = 'Đọc bằng giọng nói (Mic)';
-
-    const ta = document.getElementById('nlp-text-input');
-    if (ta && ta.value.trim()) {
-        showToast('Đã ghi nhận nội dung bằng giọng nói! Bấm "Phân tích và Giải" để xử lý.', 'success');
-    }
-}
-
-function nlpSpeakTextPreview() {
-    const text = document.getElementById('nlp-text-input')?.value?.trim();
-    if (!text) {
-        showToast('Chưa có nội dung để đọc!', 'warn');
-        return;
-    }
-    playTTS(text);
-    showToast('Đang phát giọng đọc...', 'info');
-}
-function nlpSubmitText() {
-    const text = document.getElementById('nlp-text-input')?.value?.trim();
-    if (!text) { showToast('Vui lòng nhập mô tả bài toán!', 'warn'); return; }
-    nlpShowScreen('nlp-loading-screen');
-    const logEl = document.getElementById('nlp-loading-log');
-    if (logEl) logEl.textContent = 'Bóc tách thực thể hóa học...';
-    const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${wsProto}://${location.host}/ws/analyze`);
-    _nlpWs = ws;
-    ws.onopen = () => ws.send(JSON.stringify({ action: 'text_chemistry', text }));
-    ws.onmessage = (event) => {
-        let data;
-        try { data = JSON.parse(event.data); } catch { return; }
-        if (data.type === 'log') { if (logEl) logEl.textContent = data.message || ''; return; }
-        ws.close(); _nlpWs = null;
-        if (data.type === 'result_nlp_chemistry') {
-            nlpRenderResult(data);
-        } else if (data.type === 'error') {
-            nlpShowScreen('nlp-input-screen');
-            showToast(data.message || 'Lỗi phân tích!', 'error');
-        } else {
-            nlpShowScreen('nlp-input-screen');
-            showToast('Lỗi không xác định. Thử lại.', 'error');
-        }
-    };
-    ws.onerror = (err) => {
-        console.error('[NLP WS Error]:', err);
-        _nlpWs = null;
-        nlpShowScreen('nlp-input-screen');
-        showToast('Lỗi kết nối server!', 'error');
-    };
-}
-function nlpRenderResult(data) {
-    _nlpCurrentResult = data;
-    nlpShowScreen('nlp-result-screen');
-    const entList = document.getElementById('nlp-entities-list');
-    const entities = data.entities || [];
-    if (entities.length > 0) {
-        entList.innerHTML = entities.map(e => `<div class="nlp-ent-card"><span class="nlp-ent-formula">${escHtml(e.formula||e.name||'?')}</span><span class="nlp-ent-name">${escHtml(e.name||'')}</span>${e.amount!=null?`<span class="nlp-ent-amount">${e.amount} ${escHtml(e.unit||'')}</span>`:''} ${e.mol!=null?`<span class="nlp-ent-mol">= ${e.mol} mol</span>`:''} ${e.molar_mass?`<span class="nlp-ent-M">M=${e.molar_mass}</span>`:''}<span class="nlp-ent-role ${e.role==='reactant'?'role-reactant':'role-other'}">${e.role==='reactant'?'Chat TG':(e.role||'')}</span></div>`).join('');
-        document.getElementById('nlp-entities-wrap')?.classList.remove('hidden');
-    } else {
-        document.getElementById('nlp-entities-wrap')?.classList.add('hidden');
-    }
-    const ratio = data.ratio_analysis || {};
-    let ratioHtml = ratio.T_name ? `<div class="nlp-ratio-box"><span class="nlp-ratio-badge">Ti le mol</span><span class="nlp-ratio-formula">${escHtml(ratio.T_name)} = ${ratio.T_value??''}</span><span class="nlp-ratio-rule">${escHtml(ratio.T_rule||'')}</span></div>` : '';
-    const steps = data.steps || [];
-    document.getElementById('nlp-steps-wrap').innerHTML = steps.length > 0 ? `<div class="nlp-steps-title">Loi giai tung buoc</div>${ratioHtml}${steps.map(s=>`<div class="nlp-step"><div class="nlp-step-header"><span class="nlp-step-num">Buoc ${s.step}</span><span class="nlp-step-title">${escHtml(s.title||'')}</span></div><div class="nlp-step-content">${escHtml(s.content||'')}</div>${s.result?`<div class="nlp-step-result">${escHtml(s.result)}</div>`:''}</div>`).join('')}` : ratioHtml;
-    const reactions = data.reactions || [];
-    const reactionHtml = reactions.length > 0 ? `<div class="nlp-reactions"><div class="nlp-react-title">Phuong trinh xay ra</div>${reactions.map(r=>`<div class="nlp-react-eq">${escHtml(r.equation||'')}</div>${r.note?`<div class="nlp-react-note">${escHtml(r.note)}</div>`:''}`).join('')}</div>` : '';
-    const ans = data.final_answer || {};
-    const prods = ans.products || [];
-    document.getElementById('nlp-answer-wrap').innerHTML = `<div class="nlp-answer-box"><div class="nlp-ans-title">Ket qua</div>${reactionHtml}${prods.length>0?`<div class="nlp-products-grid">${prods.map(p=>`<div class="nlp-product-card"><div class="nlp-prod-formula">${escHtml(p.formula||p.name||'?')} ${escHtml(p.state||'')}</div><div class="nlp-prod-name">${escHtml(p.name||'')}</div><div class="nlp-prod-values">${p.mol!=null?`<span class="nlp-val-tag">n=${p.mol} mol</span>`:''}${p.mass_g!=null?`<span class="nlp-val-tag">m=${p.mass_g} g</span>`:''}${p.volume_L_STP!=null?`<span class="nlp-val-tag">V=${p.volume_L_STP} L(dktc)</span>`:''}</div></div>`).join('')}</div>`:''} ${ans.excess?.formula?`<div class="nlp-excess-note">Chat du: <strong>${escHtml(ans.excess.formula)}</strong>${ans.excess.mol!=null?` (du ${ans.excess.mol} mol)`:''}</div>`:''} ${ans.summary?`<div class="nlp-summary">${escHtml(ans.summary)}</div>`:''}</div>`;
-}
-function nlpShowOnBoard() {
-    if (!_nlpCurrentResult) return;
-    nlpCloseModal();
-    buildNlpProblemWidget(_nlpCurrentResult);
-    showToast('Bảng lời giải sư phạm đã hiển thị lên bảng!', 'success');
-}
-document.getElementById('nlp-backdrop')?.addEventListener('click', nlpCloseModal);
-document.getElementById('nlp-close-input')?.addEventListener('click', nlpCloseModal);

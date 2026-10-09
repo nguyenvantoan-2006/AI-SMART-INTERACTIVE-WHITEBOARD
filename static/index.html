@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=20261009_quizfix">
+    <link rel="stylesheet" href="style.css?v=20261009_nonlp">
     <style>
         /* Bố cục bung hoa quanh nút chính */
         .floating-menu {
@@ -15,12 +15,11 @@
             bottom: 150px !important;
             right: 90px !important;
         }
-        /* 5 chức năng xếp ngũ giác đều quanh nút chính */
+        /* 4 chức năng xếp chữ thập quanh nút chính */
         #fab-analyze  { --tx: 0px !important;   --ty: -72px !important; }
-        #fab-beautify { --tx: 68px !important;  --ty: -22px !important; }
-        #fab-lasso    { --tx: 42px !important;  --ty: 58px !important;  }
-        #fab-quiz     { --tx: -42px !important; --ty: 58px !important;  }
-        #fab-nlp      { --tx: -68px !important; --ty: -22px !important; }
+        #fab-beautify { --tx: 72px !important;  --ty: 0px !important;   }
+        #fab-lasso    { --tx: 0px !important;   --ty: 72px !important;  }
+        #fab-quiz     { --tx: -72px !important; --ty: 0px !important;   }
         .fab-item:nth-child(1) { transition-delay: 0.00s; }
         .fab-item:nth-child(2) { transition-delay: 0.04s; }
         .fab-item:nth-child(3) { transition-delay: 0.08s; }
@@ -43,7 +42,6 @@
                         <button id="fab-analyze"  class="fab-item"        data-i18n-title="analyze"><i class="fas fa-bolt"></i></button>
                         <button id="fab-lasso"    class="fab-item"        data-i18n-title="lasso" title="Khoanh vùng"><i class="fas fa-object-group"></i></button>
                         <button id="fab-quiz"     class="fab-item"        data-i18n-title="quiz"><i class="fas fa-flask"></i></button>
-                        <button id="fab-nlp"      class="fab-item"        data-i18n-title="nlp"><i class="fas fa-brain"></i></button>
                     </div>
                     <button id="floating-main-btn" class="floating-main-btn" data-i18n-title="quickMenu" title="Menu công cụ nhanh">
                         <i class="fas fa-plus"></i>
@@ -127,86 +125,6 @@
 
 
                 <button class="tool-btn" id="btn-fullscreen-sidebar" data-i18n-title="fullscreen" title="Toàn màn hình"><i class="fas fa-expand"></i></button>
-            </div>
-        </div>
-    </div>
-
-    <!-- NLP Modal -->
-    <div id="nlp-modal" class="nlp-modal hidden">
-        <div class="nlp-backdrop" id="nlp-backdrop"></div>
-        <div class="nlp-container">
-            <div id="nlp-input-screen" class="nlp-screen">
-                <div class="nlp-header">
-                    <div class="nlp-icon">🧪</div>
-                    <div>
-                        <h2 class="nlp-title">Giải toán Hóa từ văn bản</h2>
-                        <p class="nlp-subtitle">Mô tả bài toán bằng ngôn ngữ tự nhiên — AI sẽ bóc tách, tính toán và hiển thị kết quả</p>
-                    </div>
-                    <button class="nlp-close-btn" id="nlp-close-input" title="Đóng"><i class="fas fa-times"></i></button>
-                </div>
-                <div class="nlp-examples">
-                    <span class="nlp-ex-label">Ví dụ nhanh:</span>
-                    <button class="nlp-ex-btn" onclick="nlpFillExample(0)">CO₂ + NaOH</button>
-                    <button class="nlp-ex-btn" onclick="nlpFillExample(1)">Fe + HNO₃</button>
-                    <button class="nlp-ex-btn" onclick="nlpFillExample(2)">H₂O₂ phân hủy</button>
-                    <button class="nlp-ex-btn" onclick="nlpFillExample(3)">Tổng hợp NH₃</button>
-                </div>
-                <div class="nlp-textarea-wrap">
-                    <textarea id="nlp-text-input" class="nlp-textarea"
-                        placeholder="Nhập hoặc nhấn nút Micro để đọc đề bài hóa học...
-
-Ví dụ:
-• Hòa tan 4.48 lít CO₂ (0°C, 1atm) vào 300ml dung dịch NaOH 1M. Tính khối lượng muối tạo thành.
-• Nêu các tính chất hóa học và phản ứng của bazơ."></textarea>
-                    <button type="button" id="nlp-textarea-mic-btn" class="nlp-inner-mic-btn" onclick="toggleNlpVoiceInput()" title="Bật micro">
-                        <i class="fas fa-microphone"></i>
-                    </button>
-                </div>
-                <div id="nlp-voice-status" class="nlp-voice-status hidden">
-                    <span class="nlp-voice-dot"></span>
-                    <span id="nlp-voice-status-text">Đang lắng nghe giáo viên nói...</span>
-                </div>
-                <div class="nlp-actions">
-                    <button id="nlp-parse-btn" class="nlp-btn-primary" onclick="nlpSubmitText()">
-                        <i class="fas fa-brain"></i> Phân tích và Giải
-                    </button>
-                    <button type="button" id="nlp-mic-btn" class="nlp-btn-voice" onclick="toggleNlpVoiceInput()">
-                        <i class="fas fa-microphone"></i> <span id="nlp-mic-btn-text">Đọc bằng giọng nói (Mic)</span>
-                    </button>
-                    <button type="button" id="nlp-speak-preview-btn" class="nlp-btn-tts" onclick="nlpSpeakTextPreview()">
-                        <i class="fas fa-volume-up"></i> <span>Đọc lại</span>
-                    </button>
-                    <button class="nlp-btn-ghost" id="nlp-cancel-input" onclick="nlpCloseModal()">
-                        <i class="fas fa-times"></i> Hủy
-                    </button>
-                </div>
-            </div>
-            <div id="nlp-loading-screen" class="nlp-screen hidden">
-                <div class="nlp-loader-wrap">
-                    <div class="nlp-spinner-ring"></div><div class="nlp-spinner-ring"></div><div class="nlp-spinner-ring"></div>
-                </div>
-                <p class="nlp-loading-text">🧠 AI đang phân tích bài toán...</p>
-                <p class="nlp-loading-sub" id="nlp-loading-log">Bóc tách thực thể hóa học...</p>
-            </div>
-            <div id="nlp-result-screen" class="nlp-screen hidden">
-                <div class="nlp-res-header">
-                    <span class="nlp-res-icon">✅</span>
-                    <span class="nlp-res-title">Kết quả phân tích</span>
-                    <button class="nlp-close-btn" onclick="nlpCloseModal()"><i class="fas fa-times"></i></button>
-                </div>
-                <div class="nlp-entities-wrap" id="nlp-entities-wrap">
-                    <div class="nlp-ent-title">🔍 Thực thể trích xuất</div>
-                    <div id="nlp-entities-list"></div>
-                </div>
-                <div class="nlp-steps-wrap" id="nlp-steps-wrap"></div>
-                <div class="nlp-answer-wrap" id="nlp-answer-wrap"></div>
-                <div class="nlp-res-actions">
-                    <button class="nlp-btn-primary" id="nlp-show-widget-btn" onclick="nlpShowOnBoard()">
-                        <i class="fas fa-chalkboard"></i> Hiển thị lên Bảng
-                    </button>
-                    <button class="nlp-btn-ghost" onclick="nlpGoBack()"><i class="fas fa-arrow-left"></i> Nhập lại</button>
-                    <button class="nlp-btn-ghost" onclick="nlpCloseModal()"><i class="fas fa-times"></i> Đóng</button>
-                </div>
             </div>
         </div>
     </div>
@@ -326,7 +244,7 @@ Ví dụ:
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/function-plot/1.23.0/function-plot.js"></script>
     <script src="chem_visuals.js?v=35"></script>
-    <script src="script.js?v=20261009_quizlasso"></script>
+    <script src="script.js?v=20261009_nonlp"></script>
     <script src="virtual_lab.js?v=7"></script>
     <!-- Page Manager: multi-page + OCR dedup + i18n (loads AFTER script.js) -->
     <script src="page_manager.js?v=20261008_nolang"></script>
