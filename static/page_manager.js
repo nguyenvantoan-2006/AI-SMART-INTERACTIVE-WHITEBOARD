@@ -999,8 +999,9 @@ function initCanvasTextInteraction() {
   const handlePointerStart = (e) => {
     const clientEvt = (e.touches && e.touches.length > 0) ? e.touches[0] : e;
     const pointer = canvas.getPointer(clientEvt);
-    const textObjs = canvas.getObjects().filter(o => 
-      o.type === 'textbox' || o.type === 'text' || o.type === 'i-text' || (o.data && o.data.isOCR)
+    // Chữ OCR + ảnh đề bài lấy từ Kho bài tập (isClip) đều kéo di chuyển được khi đang ở chế độ bút
+    const textObjs = canvas.getObjects().filter(o =>
+      o.type === 'textbox' || o.type === 'text' || o.type === 'i-text' || (o.data && (o.data.isOCR || o.data.isClip))
     );
 
     for (let i = textObjs.length - 1; i >= 0; i--) {

@@ -1371,6 +1371,80 @@ Trả về JSON hợp lệ (không markdown, không backtick):
         print(f"Error during WS: {e}")
         await websocket.close()
 
+# ============================================================
+#  KHO BÀI TẬP — giáo viên tải file đề (Word / PDF / ảnh) lên server
+# ============================================================
+from fastapi import UploadFile, File
+from fastapi.responses import FileResponse
+import re as _re
+import time as _time
+
+EXERCISE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "exercises")
+os.makedirs(EXERCISE_DIR, exist_ok=True)
+EXERCISE_EXTS = {".docx", ".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+EXERCISE_MAX_BYTES = 25 * 1024 * 1024   # 25 MB / file
+
+
+def _exercise_path(name: str) -> str:
+    """Đường dẫn an toàn trong thư mục kho đề (chặn ../ và ký tự lạ)."""
+    base = os.path.basename(name or "")
+    if not base or base.startswith(".") or os.path.splitext(base)[1].lower() not in EXERCISE_EXTS:
+        raise HTTPException(status_code=400, detail="Tên file không hợp lệ")
+    path = os.path.realpath(os.path.join(EXERCISE_DIR, base))
+    if os.path.dirname(path) != os.path.realpath(EXERCISE_DIR):
+        raise HTTPException(status_code=400, detail="Tên file không hợp lệ")
+    return path
+
+
+@app.get("/api/exercises")
+async def list_exercises():
+    items = []
+    for f in os.listdir(EXERCISE_DIR):
+        p = os.path.join(EXERCISE_DIR, f)
+        if os.path.isfile(p) and os.path.splitext(f)[1].lower() in EXERCISE_EXTS:
+            st = os.stat(p)
+            items.append({"name": f, "size": st.st_size, "mtime": st.st_mtime})
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    return items
+
+
+@app.post("/api/exercises")
+async def upload_exercise(file: UploadFile = File(...)):
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in EXERCISE_EXTS:
+        raise HTTPException(status_code=400, detail="Chỉ nhận file Word (.docx), PDF hoặc ảnh (png, jpg, webp)")
+    data = await file.read()
+    if len(data) > EXERCISE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File quá lớn (tối đa 25 MB)")
+    # Giữ tên gốc (cả tiếng Việt), bỏ ký tự cấm trong tên file Windows; trùng tên → thêm số
+    stem = _re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", os.path.splitext(os.path.basename(file.filename))[0]).strip(" .") or "de-bai"
+    name = f"{stem}{ext}"
+    n = 1
+    while os.path.exists(os.path.join(EXERCISE_DIR, name)):
+        n += 1
+        name = f"{stem} ({n}){ext}"
+    with open(_exercise_path(name), "wb") as fh:
+        fh.write(data)
+    return {"name": name, "size": len(data), "mtime": _time.time()}
+
+
+@app.get("/api/exercises/{name}")
+async def get_exercise(name: str):
+    path = _exercise_path(name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Không tìm thấy file")
+    return FileResponse(path)
+
+
+@app.delete("/api/exercises/{name}")
+async def delete_exercise(name: str):
+    path = _exercise_path(name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Không tìm thấy file")
+    os.remove(path)
+    return {"ok": True}
+
+
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 if __name__ == "__main__":

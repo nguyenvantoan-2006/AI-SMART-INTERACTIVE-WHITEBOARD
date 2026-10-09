@@ -116,7 +116,8 @@ function saveState() {
     if (isRedoing) return;
     clearTimeout(saveStateTimeout);
     saveStateTimeout = setTimeout(() => {
-        const state = JSON.stringify(canvas);
+        // Giữ cả thuộc tính 'data' (chữ OCR, ảnh đề bài) để Hoàn tác xong vẫn kéo được
+        const state = JSON.stringify(canvas.toJSON(['data']));
         if (undoStack.length === 0 || undoStack[undoStack.length - 1] !== state) {
             redoStack = [];
             undoStack.push(state);
