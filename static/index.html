@@ -7,25 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=20261009_clipmove">
-    <style>
-        /* Bố cục bung hoa quanh nút chính */
-        .floating-menu {
-            position: fixed !important;
-            bottom: 150px !important;
-            right: 90px !important;
-        }
-        /* 4 chức năng xếp chữ thập quanh nút chính */
-        #fab-analyze  { --tx: 0px !important;   --ty: -72px !important; }
-        #fab-beautify { --tx: 72px !important;  --ty: 0px !important;   }
-        #fab-lasso    { --tx: 0px !important;   --ty: 72px !important;  }
-        #fab-quiz     { --tx: -72px !important; --ty: 0px !important;   }
-        .fab-item:nth-child(1) { transition-delay: 0.00s; }
-        .fab-item:nth-child(2) { transition-delay: 0.04s; }
-        .fab-item:nth-child(3) { transition-delay: 0.08s; }
-        .fab-item:nth-child(4) { transition-delay: 0.12s; }
-        .fab-item:nth-child(5) { transition-delay: 0.16s; }
-    </style>
+    <link rel="stylesheet" href="style.css?v=20261019_bt4">
 </head>
 <body>
     <div class="app-layout" id="app-layout">
@@ -35,18 +17,6 @@
             <div class="canvas-section" id="canvas-section">
                 <canvas id="whiteboard-canvas"></canvas>
 
-                <!-- Req #1: Floating FAB (+) — viewport clamped, responsive -->
-                <div id="floating-menu" class="floating-menu">
-                    <div id="floating-menu-items" class="floating-menu-items">
-                        <button id="fab-beautify" class="fab-item"        data-i18n-title="beautify"><i class="fas fa-magic"></i></button>
-                        <button id="fab-analyze"  class="fab-item"        data-i18n-title="analyze"><i class="fas fa-bolt"></i></button>
-                        <button id="fab-lasso"    class="fab-item"        data-i18n-title="lasso" title="Khoanh vùng"><i class="fas fa-object-group"></i></button>
-                        <button id="fab-quiz"     class="fab-item"        data-i18n-title="quiz"><i class="fas fa-flask"></i></button>
-                    </div>
-                    <button id="floating-main-btn" class="floating-main-btn" data-i18n-title="quickMenu" title="Menu công cụ nhanh">
-                        <i class="fas fa-plus"></i>
-                    </button>
-                </div>
 
                 <div id="loading-overlay" class="loading-overlay hidden">
                     <div class="spinner"></div>
@@ -99,7 +69,18 @@
                 <button class="tool-btn" id="btn-sidebar-erase" data-i18n-title="erase" title="Tẩy"><i class="fas fa-eraser"></i></button>
                 <button class="tool-btn" id="btn-exlib" title="Kho bài tập — mở đề Word/PDF, cắt bài kéo ra bảng"><i class="fas fa-search"></i></button>
                 <button class="tool-btn" id="btn-export-pdf" title="Tải bài giảng (PDF) cho học sinh xem lại"><i class="fas fa-file-download"></i></button>
+                <button class="tool-btn" id="btn-calc" title="Máy tính khoa học (kéo thân máy để di chuyển)"><i class="fas fa-calculator"></i></button>
                 <button class="tool-btn danger" id="btn-clear" data-i18n-title="clear" title="Xóa tất cả"><i class="fas fa-trash"></i></button>
+            </div>
+
+            <div class="sidebar-divider"></div>
+
+            <!-- Cụm AI: Trực quan hóa, Làm đẹp chữ, Khoanh vùng, Tạo Quiz -->
+            <div class="sidebar-section ai-tools-group">
+                <button class="tool-btn primary-action-btn" id="fab-analyze" title="Trực quan hóa: AI đọc bảng và dựng mô hình 3D"><i class="fas fa-bolt"></i><span class="btn-label">Trực quan hóa</span></button>
+                <button class="tool-btn" id="fab-beautify" title="Làm đẹp chữ (chữ viết tay → chữ in)"><i class="fas fa-magic"></i></button>
+                <button class="tool-btn" id="fab-lasso" title="Khoanh vùng"><i class="fas fa-object-group"></i></button>
+                <button class="tool-btn" id="fab-quiz" title="Tạo bài tập từ phần đã khoanh vùng"><i class="fas fa-flask"></i></button>
             </div>
 
             <div class="sidebar-divider"></div>
@@ -136,20 +117,40 @@
         <div class="quiz-backdrop" id="quiz-backdrop"></div>
         <div class="quiz-container">
             <div id="quiz-setup-screen" class="quiz-screen">
-                <div class="quiz-setup-icon">🎯</div>
-                <h2 class="quiz-title">Tạo Quiz Trắc Nghiệm</h2>
-                <p class="quiz-subtitle">AI sẽ đọc <b>phần nội dung bạn đã khoanh vùng</b> và tự động tạo câu hỏi trắc nghiệm.</p>
-                <div class="quiz-num-selector">
-                    <span class="quiz-num-label">Số câu hỏi:</span>
-                    <div class="quiz-num-btns">
-                        <button class="quiz-num-btn" data-num="3">3</button>
-                        <button class="quiz-num-btn active" data-num="5">5</button>
-                        <button class="quiz-num-btn" data-num="10">10</button>
+                <div class="quiz-setup-icon">📝</div>
+                <h2 class="quiz-title">Tạo Bài Tập</h2>
+                <p class="quiz-subtitle">AI sẽ đọc <b>phần nội dung bạn đã khoanh vùng</b> và tạo bài tập theo lựa chọn bên dưới.</p>
+                <div class="quiz-opts">
+                    <div class="quiz-opt-row">
+                        <span class="quiz-num-label">Loại bài tập</span>
+                        <div class="quiz-chips" id="quiz-type-chips">
+                            <button class="quiz-chip active" data-val="mcq"><i class="fas fa-list-ul"></i> Trắc nghiệm</button>
+                            <button class="quiz-chip" data-val="essay"><i class="fas fa-pen-nib"></i> Tự luận</button>
+                            <button class="quiz-chip" data-val="mixed"><i class="fas fa-layer-group"></i> Kết hợp</button>
+                        </div>
+                    </div>
+                    <div class="quiz-opt-row">
+                        <span class="quiz-num-label">Số câu hỏi</span>
+                        <div class="quiz-stepper">
+                            <button class="quiz-step" id="quiz-num-dec" aria-label="Bớt một câu"><i class="fas fa-minus"></i></button>
+                            <input type="number" id="quiz-num-input" min="1" max="20" value="5">
+                            <button class="quiz-step" id="quiz-num-inc" aria-label="Thêm một câu"><i class="fas fa-plus"></i></button>
+                        </div>
+                    </div>
+                    <div class="quiz-opt-row">
+                        <span class="quiz-num-label">Mức độ</span>
+                        <div class="quiz-chips" id="quiz-level-chips">
+                            <button class="quiz-chip" data-val="nhan_biet">Nhận biết</button>
+                            <button class="quiz-chip" data-val="thong_hieu">Thông hiểu</button>
+                            <button class="quiz-chip" data-val="van_dung">Vận dụng</button>
+                            <button class="quiz-chip" data-val="van_dung_cao">Vận dụng cao</button>
+                            <button class="quiz-chip active" data-val="mixed">Trộn các mức</button>
+                        </div>
                     </div>
                 </div>
                 <p id="quiz-setup-msg" class="quiz-setup-msg hidden"></p>
                 <div class="quiz-setup-actions">
-                    <button id="quiz-start-btn" class="quiz-btn quiz-btn-primary"><i class="fas fa-rocket"></i> Bắt đầu tạo Quiz</button>
+                    <button id="quiz-start-btn" class="quiz-btn quiz-btn-primary"><i class="fas fa-rocket"></i> Tạo bài tập</button>
                     <button id="quiz-close-btn" class="quiz-btn quiz-btn-ghost"><i class="fas fa-times"></i> Đóng</button>
                 </div>
             </div>
@@ -157,10 +158,20 @@
                 <div class="quiz-loader">
                     <div class="quiz-loader-ring"></div><div class="quiz-loader-ring"></div><div class="quiz-loader-ring"></div>
                 </div>
-                <p class="quiz-loading-text">AI đang phân tích bảng và tạo câu hỏi...</p>
+                <p class="quiz-loading-text">AI đang đọc phần khoanh vùng và tạo bài tập...</p>
                 <p class="quiz-loading-sub" id="quiz-loading-log"></p>
             </div>
             <div id="quiz-question-screen" class="quiz-screen hidden">
+                <div class="quiz-toolbar" id="quiz-toolbar">
+                    <span class="quiz-grip" title="Kéo để di chuyển khung câu hỏi"><i class="fas fa-grip-horizontal"></i> Kéo để di chuyển</span>
+                    <div class="quiz-size-tools">
+                        <button class="quiz-tool" id="quiz-font-dec" title="Thu nhỏ chữ">A−</button>
+                        <span class="quiz-font-val" id="quiz-font-val">100%</span>
+                        <button class="quiz-tool" id="quiz-font-inc" title="Phóng to chữ">A+</button>
+                        <button class="quiz-tool" id="quiz-expand-btn" title="Phóng to khung / thu về"><i class="fas fa-expand"></i></button>
+                        <button class="quiz-tool quiz-tool-close" id="quiz-x-btn" title="Đóng (Esc)"><i class="fas fa-times"></i></button>
+                    </div>
+                </div>
                 <div class="quiz-header">
                     <div class="quiz-topic-badge" id="quiz-topic-badge">Hóa học</div>
                     <div class="quiz-progress-bar"><div class="quiz-progress-fill" id="quiz-progress-fill"></div></div>
@@ -175,7 +186,9 @@
                     <i class="fas fa-lightbulb"></i><span id="quiz-explanation-text"></span>
                 </div>
                 <div class="quiz-nav">
-                    <button id="quiz-next-btn" class="quiz-btn quiz-btn-primary hidden">Câu tiếp theo <i class="fas fa-arrow-right"></i></button>
+                    <button id="quiz-prev-btn" class="quiz-btn quiz-btn-ghost"><i class="fas fa-arrow-left"></i> Câu trước</button>
+                    <div class="quiz-dots" id="quiz-dots"></div>
+                    <button id="quiz-next-btn" class="quiz-btn quiz-btn-primary">Câu sau <i class="fas fa-arrow-right"></i></button>
                     <button id="quiz-finish-btn" class="quiz-btn quiz-btn-success hidden">Xem kết quả <i class="fas fa-trophy"></i></button>
                 </div>
             </div>
@@ -246,12 +259,13 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/function-plot/1.23.0/function-plot.js"></script>
     <script src="chem_visuals.js?v=35"></script>
-    <script src="script.js?v=20261009_exlib"></script>
+    <script src="script.js?v=20261019_notts"></script>
     <script src="virtual_lab.js?v=7"></script>
-    <script src="exercise_lib.js?v=3"></script>
+    <script src="exercise_lib.js?v=4"></script>
     <!-- Page Manager: multi-page + OCR dedup + i18n (loads AFTER script.js) -->
-    <script src="page_manager.js?v=20261009_clipmove"></script>
+    <script src="page_manager.js?v=20261019_textmove2"></script>
     <script src="lesson_export.js?v=3"></script>
+    <script src="calculator.js?v=3"></script>
     <!-- Hand Tracking Module -->
     <script src="mediapipe/vision_bundle.js"></script>
     <script src="hand_gesture.js?v=3"></script>

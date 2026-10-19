@@ -362,25 +362,29 @@
         panel.classList.contains('hidden') ? openPanel() : closePanel();
     });
 
-    // ── Kéo ảnh đề SANG TRANG KHÁC ──────────────────────────────────────
-    // Kéo ra ngoài trang: ảnh mờ bám theo con trỏ, sát mép trên/dưới thì tự cuộn,
-    // thả lên trang nào thì ảnh chuyển sang trang đó (đúng chỗ thả).
+    // ── Kéo ảnh đề & CHỮ SANG TRANG KHÁC ────────────────────────────────
+    // Kéo ra ngoài trang: hình mờ bám theo con trỏ, sát mép trên/dưới thì tự cuộn,
+    // thả lên trang nào thì ảnh/chữ chuyển sang trang đó (đúng chỗ thả).
+    // Áp dụng cho ảnh đề (isClip) và mọi chữ trên bảng: chữ đọc từ mic, chữ nhận dạng (isOCR), chữ làm đẹp.
+    const isTextObj = (o) => o.type === 'textbox' || o.type === 'text' || o.type === 'i-text';
+    const isMovable = (o) => o && ((o.data && (o.data.isClip || o.data.isOCR)) || isTextObj(o));
     let clipDrag = null;   // { obj, grabX, grabY, lastX, lastY, ghost, outside, raf }
     const slotAt = (x, y) => document.elementsFromPoint(x, y).find(n => n.classList && n.classList.contains('page-slot')) || null;
     const currentSlot = () => document.getElementById('canvas-section')?.parentElement;
 
     canvas.on('mouse:down', (opt) => {
         const o = opt.target;
-        if (!o || !(o.data && o.data.isClip) || !opt.e) return;
+        if (!isMovable(o) || o.isEditing || !opt.e) return;
         const e = opt.e.touches ? opt.e.touches[0] : opt.e;
         const r = document.getElementById('canvas-section').getBoundingClientRect();
+        const br = o.getBoundingRect(true, true);
         const ghost = document.createElement('img');
         ghost.className = 'clip-drag-ghost hidden';
-        ghost.src = o.getSrc();
-        ghost.style.width = o.getScaledWidth() + 'px';
-        ghost.style.height = o.getScaledHeight() + 'px';
+        ghost.src = o.data && o.data.isClip ? o.getSrc() : o.toDataURL({ format: 'png', enableRetinaScaling: false });
+        ghost.style.width = br.width + 'px';
+        ghost.style.height = br.height + 'px';
         document.body.appendChild(ghost);
-        clipDrag = { obj: o, grabX: e.clientX - (r.left + o.left), grabY: e.clientY - (r.top + o.top),
+        clipDrag = { obj: o, grabX: e.clientX - (r.left + br.left), grabY: e.clientY - (r.top + br.top), w: br.width, h: br.height,
                      lastX: e.clientX, lastY: e.clientY, ghost, outside: false, raf: null };
         window.__clipDragging = true;
         clipAutoScroll();
@@ -424,23 +428,36 @@
         d.ghost.remove();
         const slot = slotAt(d.lastX, d.lastY);
         if (d.outside && slot && slot !== currentSlot() && typeof window.switchToPage === 'function') {
-            // Chuyển ảnh sang trang được thả
-            const json = d.obj.toObject(['data']);
+            // Chuyển ảnh/chữ sang trang được thả
+            const json = d.obj.toObject(['data', 'selectable', 'evented', 'hasControls', 'hasBorders', 'lockRotation', 'hoverCursor', 'moveCursor']);
             json.opacity = 1;
             const r = slot.getBoundingClientRect();
-            const w = d.obj.getScaledWidth(), h = d.obj.getScaledHeight();
+            const { w, h } = d;
+            // Chữ nhận dạng (OCR) có danh sách theo trang → chuyển mục tương ứng sang trang mới
+            const srcPage = window.pageManager && pageManager.getCurrentPage();
+            const ocrEntry = srcPage && (srcPage.ocrObjects || []).find(en => en._fabricObj === d.obj);
+            if (ocrEntry) srcPage.ocrObjects = srcPage.ocrObjects.filter(en => en !== ocrEntry);
             canvas.remove(d.obj);
             canvas.discardActiveObject();
             canvas.renderAll();
             if (typeof saveState === 'function') saveState();
             await window.switchToPage(Number(slot.dataset.pageId));
             fabric.util.enlivenObjects([json], ([img]) => {
-                img.set({
-                    left: Math.max(0, Math.min(d.lastX - d.grabX - r.left, canvas.width - w)),
-                    top: Math.max(0, Math.min(d.lastY - d.grabY - r.top, canvas.height - h)),
-                    selectable: false, evented: false
-                });
+                const x = Math.max(0, Math.min(d.lastX - d.grabX - r.left, canvas.width - w));
+                const y = Math.max(0, Math.min(d.lastY - d.grabY - r.top, canvas.height - h));
+                img.setPositionByOrigin(new fabric.Point(x + w / 2, y + h / 2), 'center', 'center');
+                if (img.data && img.data.isClip) img.set({ selectable: false, evented: false });
                 canvas.add(img);
+                img.setCoords();
+                if (img.data && img.data.isOCR && typeof makeOCRTextDraggable === 'function') {
+                    makeOCRTextDraggable(img, ocrEntry);
+                    if (ocrEntry) {
+                        const dst = pageManager.getCurrentPage();
+                        ocrEntry._fabricObj = img;
+                        ocrEntry.x = Math.round(img.left); ocrEntry.y = Math.round(img.top);
+                        (dst.ocrObjects = dst.ocrObjects || []).push(ocrEntry);
+                    }
+                }
                 canvas.renderAll();
                 if (typeof saveState === 'function') saveState();
                 window.__clipDragging = false;

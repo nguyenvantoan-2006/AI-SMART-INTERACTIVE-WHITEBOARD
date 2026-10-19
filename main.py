@@ -159,7 +159,90 @@ async def _call_one_model(model_candidate: str, prompt: list, system_instruction
     return _parse_llm_json(response.text, model_candidate)
 
 
-async def call_llm(prompt: list, system_instruction: str) -> dict:
+# ── Tạo bài tập: loại câu hỏi & mức độ nhận thức (chương trình GDPT 2018) ──
+QUIZ_TYPE_NAMES = {"mcq": "trắc nghiệm", "essay": "tự luận", "mixed": "trắc nghiệm + tự luận"}
+QUIZ_TYPE_RULES = {"mcq": True, "essay": True, "mixed": True}
+QUIZ_LEVEL_NAMES = {"nhan_biet": "Nhận biết", "thong_hieu": "Thông hiểu", "van_dung": "Vận dụng",
+                    "van_dung_cao": "Vận dụng cao", "mixed": "trộn các mức"}
+QUIZ_LEVEL_RULES = {"nhan_biet": "nhận_biết", "thong_hieu": "thông_hiểu", "van_dung": "vận_dụng",
+                    "van_dung_cao": "vận_dụng_cao", "mixed": None}
+QUIZ_LEVEL_LABEL = {"nhận_biết": "NHẬN BIẾT", "thông_hiểu": "THÔNG HIỂU", "vận_dụng": "VẬN DỤNG", "vận_dụng_cao": "VẬN DỤNG CAO"}
+# Khía cạnh giao cho từng phần khi chia đề chạy song song — tránh các phần ra câu trùng nhau
+_QUIZ_FOCUS_EASY = ["chất tham gia, sản phẩm và hiện tượng quan sát được",
+                    "loại phản ứng, cân bằng phương trình, vai trò các chất (chất oxi hóa/khử, axit/bazơ)",
+                    "điều kiện phản ứng, ứng dụng thực tế và an toàn thí nghiệm"]
+_QUIZ_FOCUS_HARD = ["tính toán theo phương trình (số mol, khối lượng, thể tích khí, nồng độ)",
+                    "bài toán chất dư/hết, hỗn hợp hoặc hiệu suất phản ứng",
+                    "tình huống thực tế cần tính toán và giải thích"]
+
+def _quiz_plan(n: int, q_type: str, level: str) -> list:
+    """Danh sách (loại câu, mức độ) cho từng câu, xếp từ dễ đến khó."""
+    if q_type == "mixed" and n > 1:
+        n_mcq = min(n - 1, max(1, round(n * 0.6)))
+        types = ["mcq"] * n_mcq + ["essay"] * (n - n_mcq)
+    else:
+        types = [q_type if q_type != "mixed" else "mcq"] * n
+    if QUIZ_LEVEL_RULES[level]:
+        levels = [QUIZ_LEVEL_RULES[level]] * n
+    else:
+        # Trộn: ~40% nhận biết, 30% thông hiểu, 20% vận dụng, 10% vận dụng cao
+        order, cum, levels = ["nhận_biết", "thông_hiểu", "vận_dụng", "vận_dụng_cao"], [0.4, 0.7, 0.9, 1.0], []
+        for k in range(n):
+            pos = (k + 0.5) / n
+            levels.append(next(lv for lv, c in zip(order, cum) if pos <= c))
+    return list(zip(types, levels))
+
+def _quiz_chunks(plan: list) -> list:
+    """Chia đề thành các phần ~3 câu (tối đa 5 phần) để gọi AI song song."""
+    n = len(plan)
+    m = min(5, -(-n // 3))                      # số phần; chia đều (vd 4 câu → 2 + 2)
+    bounds = [round(n * j / m) for j in range(m + 1)]
+    chunks, easy_i, hard_i = [], 0, 0
+    for j in range(m):
+        part = plan[bounds[j]:bounds[j + 1]]
+        hard = sum(lv in ("vận_dụng", "vận_dụng_cao") for _, lv in part) * 2 > len(part)
+        if hard:
+            focus = _QUIZ_FOCUS_HARD[hard_i % len(_QUIZ_FOCUS_HARD)]; hard_i += 1
+        else:
+            focus = _QUIZ_FOCUS_EASY[easy_i % len(_QUIZ_FOCUS_EASY)]; easy_i += 1
+        chunks.append({"plan": part, "focus": focus})
+    return chunks
+
+QUIZ_SYSTEM_PROMPT = """Bạn là Giáo viên Hóa học THPT Việt Nam giàu kinh nghiệm, ra đề theo chương trình GDPT 2018.
+Nhiệm vụ: đọc ảnh phần nội dung giáo viên đã khoanh vùng trên bảng và tạo bài tập HÓA HỌC bám sát nội dung đó,
+đúng số câu, đúng loại câu và đúng mức độ mà người dùng yêu cầu cho TỪNG câu.
+
+MỨC ĐỘ NHẬN THỨC:
+- NHẬN BIẾT: nhớ, nhận ra tên chất, công thức, tính chất, hiện tượng, loại phản ứng.
+- THÔNG HIỂU: giải thích hiện tượng, so sánh, cân bằng phương trình, xác định chất oxi hóa/khử, suy ra sản phẩm.
+- VẬN DỤNG: bài toán tính theo phương trình 1–2 bước (số mol, khối lượng, thể tích, nồng độ), tình huống thực tế quen thuộc.
+- VẬN DỤNG CAO: bài toán nhiều bước, chất dư/hết, hỗn hợp, hiệu suất, biện luận, tình huống thực tế mới.
+
+LOẠI CÂU:
+- TRẮC NGHIỆM: đúng 4 phương án A–D, chỉ 1 đáp án đúng; 3 phương án sai là "bẫy" học sinh hay mắc; kèm giải thích 1-2 câu.
+- TỰ LUẬN: viết PTHH, giải thích hiện tượng, hoặc bài toán tính (khí ở đkc 24,79 L/mol); "solution" là lời giải mẫu từng bước, mỗi bước một dòng.
+
+QUY TẮC BẮT BUỘC:
+- TUYỆT ĐỐI KHÔNG BỊA nội dung: nếu ảnh trống, chỉ có nét nguệch ngoạc, hoặc KHÔNG đọc được công thức/phương trình/khái niệm hóa học rõ ràng → trả về đúng {"topic": "", "questions": []}
+- Mọi câu PHẢI nhắc chất hoặc phương trình CỤ THỂ có trong ảnh; số liệu hợp lý, kết quả tính ra số đẹp
+- Kiến thức, số liệu, đáp án phải CHÍNH XÁC (nguyên tử khối: H=1, C=12, N=14, O=16, Na=23, Mg=24, Al=27, S=32, Cl=35,5, K=39, Ca=40, Fe=56, Cu=64, Zn=65, Ag=108, Ba=137)
+- Viết chỉ số hóa học bằng ký tự Unicode (H₂SO₄, Fe₂O₃, 10⁻³)
+- Toàn bộ bằng tiếng Việt, ngắn gọn
+
+Trả về JSON hợp lệ (không markdown, không backtick):
+{
+  "topic": "<Tên chủ đề ngắn, ví dụ: Phản ứng oxi hóa khử – Fe + CuSO₄>",
+  "questions": [
+    {"id": 1, "type": "mcq", "level": "<nhận_biết | thông_hiểu | vận_dụng | vận_dụng_cao>", "question": "<Câu hỏi>",
+     "options": {"A": "...", "B": "...", "C": "...", "D": "..."}, "answer": "<A, B, C hoặc D>", "explanation": "<Giải thích 1-2 câu>"},
+    {"id": 2, "type": "essay", "level": "<...>", "question": "<Đề bài tự luận>", "solution": "<Lời giải mẫu, các bước cách nhau bằng \\n>"}
+  ]
+}
+"""
+
+
+async def call_llm(prompt: list, system_instruction: str,
+                   hedge_delay: float = LLM_HEDGE_DELAY, total_timeout: float = LLM_TOTAL_TIMEOUT) -> dict:
     # SPEED OPT 1: Kiểm tra Smart Cache trước khi gọi API
     cache_key = _compute_prompt_hash(prompt, system_instruction)
     if cache_key in _LLM_RESPONSE_CACHE:
@@ -195,11 +278,11 @@ async def call_llm(prompt: list, system_instruction: str) -> dict:
     launch_next()
     try:
         while running:
-            remaining = LLM_TOTAL_TIMEOUT - (time.time() - started)
+            remaining = total_timeout - (time.time() - started)
             if remaining <= 0:
                 break
             # Còn model dự phòng → chỉ chờ LLM_HEDGE_DELAY rồi gọi thêm model song song
-            wait_for = min(LLM_HEDGE_DELAY, remaining) if next_idx < len(models_to_try) else remaining
+            wait_for = min(hedge_delay, remaining) if next_idx < len(models_to_try) else remaining
             done, _ = await asyncio.wait(running.keys(), timeout=wait_for, return_when=asyncio.FIRST_COMPLETED)
 
             for task in done:
@@ -1032,6 +1115,9 @@ The user said something via microphone. Your job is to determine their intent.
 - Erase specific part: {"type": "command", "action": "erase_region", "args": {"box": [ymin, xmin, ymax, xmax], "target_text": "..."}, "reply": "Đã xóa phần bạn yêu cầu"}
 - Change color: {"type": "command", "action": "change_color", "args": {"color": "#ef4444", "target_type": "...", "target_text": "..."}, "reply": "Đã đổi màu"}
 - Add text: {"type": "command", "action": "add_text", "args": {"text": "..."}, "reply": "Đã thêm chữ"}
+  QUAN TRỌNG: nếu người dùng CHỈ ĐỌC một công thức, phương trình hoặc câu chữ để ghi lên bảng (không phải câu hỏi, không phải lệnh)
+  → LUÔN dùng add_text, đổi cách đọc sang ký hiệu chuẩn có chỉ số Unicode
+  (vd "cờ ô hai cộng hát hai ô" hoặc "CO2 + H2O" → "CO₂ + H₂O"; "sắt cộng đồng sunfat" → "Fe + CuSO₄").
 - Beautify text: {"type": "command", "action": "beautify_text", "reply": "Đang làm đẹp chữ..."}
 - Undo: {"type": "command", "action": "undo", "reply": "Đã hoàn tác"}
 - Redo: {"type": "command", "action": "redo", "reply": "Đã làm lại"}
@@ -1064,8 +1150,13 @@ Respond STRICTLY in JSON format (without markdown backticks).
         prompt = [f"User said: {text}"]
         if img:
             # FIX: Convert PIL Image sang bytes cho Gemini SDK
+            # SPEED: thu nhỏ ảnh bảng (tối đa 1024 px) — đủ để AI định vị vùng xóa/đổi màu, gửi nhanh hơn
+            small = img.convert("RGB")
+            if max(small.size) > 1024:
+                k = 1024 / max(small.size)
+                small = small.resize((int(small.width * k), int(small.height * k)), Image.BILINEAR)
             img_buffer = BytesIO()
-            img.save(img_buffer, format="JPEG", quality=90)
+            small.save(img_buffer, format="JPEG", quality=80)
             img_part = {"mime_type": "image/jpeg", "data": img_buffer.getvalue()}
             prompt.append("Here is the current whiteboard image:")
             prompt.append(img_part)
@@ -1272,97 +1363,69 @@ Output strictly valid JSON (no markdown, no backticks):
             await websocket.send_json(nlp_res)
 
         elif action == "quiz_generate":
-            num_questions = req.get("num_questions", 5)
-            await send_log("QuizAgent", f"🎯 Đang phân tích nội dung bảng và tạo {num_questions} câu hỏi chuyên sâu...")
-            sys_instr = f"""Bạn là Giáo viên Hóa học THPT Việt Nam giàu kinh nghiệm. Nhiệm vụ: đọc ảnh bảng và tạo đề trắc nghiệm HÓA HỌC chuyên sâu, bám sát nội dung.
-
-BƯỚC 1 — NHẬN DIỆN NỘI DUNG TRÊN BẢNG:
-Xác định: phương trình hóa học, công thức các chất, điều kiện phản ứng (nhiệt độ, xúc tác),
-ký hiệu kết tủa (↓), khí bay (↑), màu sắc, loại hóa chất (axit, bazơ, muối, oxit, kim loại...).
-
-BƯỚC 2 — TẠO {num_questions} CÂU HỎI THEO CÁC DẠNG SAU:
-
-① NHẬN BIẾT CHẤT: Hỏi tính chất vật lý/hóa học của CHẤT CỤ THỂ trên bảng
-   Ví dụ: "HCl là axit mạnh. Khi nhỏ vào quỳ tím, hiện tượng gì xảy ra?"
-   Ví dụ: "CuSO₄ khan có màu gì và khi ngậm nước có màu gì?"
-
-② LOẠI PHẢN ỨNG: Phân loại phản ứng trên bảng
-   Ví dụ: "Phản ứng Fe + CuSO₄ → FeSO₄ + Cu thuộc loại phản ứng nào?"
-   (trao đổi ion, oxi hóa-khử, trung hòa, kết tủa, phân hủy, cộng, thế...)
-
-③ SẢN PHẨM & HIỆN TƯỢNG: Hỏi về sản phẩm, màu sắc, trạng thái, hiện tượng
-   Ví dụ: "Khi cho NaOH vào dung dịch CuSO₄, xuất hiện kết tủa màu gì?"
-   Ví dụ: "Phản ứng nào tạo ra khí không màu mùi khai?"
-
-④ CÂN BẰNG & TỈ LỆ MOL: Hỏi hệ số, tỉ lệ mol (nếu có phương trình trên bảng)
-   Ví dụ: "Trong phản ứng 2KMnO₄ → K₂MnO₄ + MnO₂ + O₂↑, tỉ lệ KMnO₄ : O₂ là?"
-
-⑤ ỨNG DỤNG THỰC TẾ: Hỏi ứng dụng của CHẤT hoặc PHẢN ỨNG trong đời sống/công nghiệp
-   Ví dụ: "NaOH được ứng dụng trong công nghiệp nào sau đây?"
-
-⑥ AN TOÀN THÍ NGHIỆM: Hỏi biện pháp an toàn khi làm thí nghiệm với hóa chất trên bảng
-   Ví dụ: "Khi pha loãng H₂SO₄ đặc, cần tuân thủ quy tắc nào?"
-
-QUY TẮC BẮT BUỘC:
-- TUYỆT ĐỐI KHÔNG BỊA nội dung: nếu ảnh bảng trống, chỉ có nét vẽ nguệch ngoạc, hoặc KHÔNG đọc được công thức/phương trình/khái niệm hóa học rõ ràng → trả về đúng {{"topic": "", "questions": []}}
-- Câu hỏi PHẢI nhắc tên chất hoặc phương trình CỤ THỂ trên bảng
-- NẾU BẢNG CÓ PHƯƠNG TRÌNH → tối thiểu 3/5 câu phải hỏi về phương trình đó
-- 3 đáp án sai phải là "bẫy thường gặp" của học sinh (không ngớ ngẩn)
-- Giải thích đáp án: có thể trích dẫn công thức/phương trình liên quan
-- Toàn bộ bằng tiếng Việt
-
-Trả về JSON hợp lệ (không markdown, không backtick):
-{{
-  "topic": "<Tên chủ đề, ví dụ: Phản ứng oxi hóa khử – Fe + CuSO₄>",
-  "questions": [
-    {{
-      "id": 1,
-      "category": "<nhận_biết | loại_phản_ứng | sản_phẩm | cân_bằng | ứng_dụng | an_toàn>",
-      "question": "<Câu hỏi, nhắc chất/phương trình cụ thể trên bảng>",
-      "options": {{
-        "A": "<Đáp án A>",
-        "B": "<Đáp án B>",
-        "C": "<Đáp án C>",
-        "D": "<Đáp án D>"
-      }},
-      "answer": "<A, B, C hoặc D>",
-      "explanation": "<Giải thích 1-2 câu, trích dẫn công thức nếu cần>"
-    }}
-  ]
-}}
-"""
-            if img:
-                img_buffer = BytesIO()
-                enhanced = SuperAgent().preprocess_image(img)
-                enhanced.save(img_buffer, format="JPEG", quality=90)
-                img_bytes_data = img_buffer.getvalue()
-                img_part = {"mime_type": "image/jpeg", "data": img_bytes_data}
-                prompt = [
-                    "Đây là ảnh bảng trắng học sinh. Đọc kỹ phương trình hóa học, công thức và chú thích. Tạo câu hỏi trắc nghiệm chuyên sâu HÓA HỌC bám sát nội dung trên bảng:",
-                    img_part
-                ]
-            else:
-                await websocket.send_json({"type": "error", "message": "Bảng trắng trống. Hãy viết phương trình hóa học trước khi tạo quiz!"})
+            # Tạo bài tập từ phần đã khoanh vùng: trắc nghiệm / tự luận / kết hợp, chọn số câu & mức độ.
+            # SPEED: chia đề thành nhiều phần (~3 câu) và gọi AI SONG SONG — thời gian chờ gần như không tăng theo số câu.
+            try:
+                num_questions = max(1, min(20, int(req.get("num_questions", 5))))
+            except (TypeError, ValueError):
+                num_questions = 5
+            q_type = req.get("question_type", "mcq")
+            if q_type not in QUIZ_TYPE_RULES:
+                q_type = "mcq"
+            level = req.get("level", "mixed")
+            if level not in QUIZ_LEVEL_RULES:
+                level = "mixed"
+            await send_log("QuizAgent", f"🎯 Đang tạo {num_questions} câu {QUIZ_TYPE_NAMES[q_type]} — mức độ {QUIZ_LEVEL_NAMES[level]}...")
+            if not img:
+                await websocket.send_json({"type": "error", "message": "Chưa có phần khoanh vùng. Hãy khoanh vùng nội dung trước khi tạo bài tập!"})
                 return
 
-            try:
-                result = await asyncio.wait_for(
-                    call_llm(prompt, sys_instr),
-                    timeout=25.0
-                )
-                questions = result.get("questions", [])
-                topic = result.get("topic", "Hóa học")
-                if not questions:
-                    await websocket.send_json({"type": "error", "message": "Bảng trống hoặc chữ quá mờ. Hãy viết rõ phương trình hóa học và thử lại!"})
-                else:
-                    await send_log("QuizAgent", f"✅ Đã tạo {len(questions)} câu hỏi chuyên sâu về: {topic}")
-                    await websocket.send_json({
-                        "type": "result_quiz",
-                        "topic": topic,
-                        "questions": questions
-                    })
-            except asyncio.TimeoutError:
-                await websocket.send_json({"type": "error", "message": "Hết thời gian tạo quiz. Vui lòng thử lại!"})
+            img_buffer = BytesIO()
+            SuperAgent().preprocess_image(img).save(img_buffer, format="JPEG", quality=90)
+            img_part = {"mime_type": "image/jpeg", "data": img_buffer.getvalue()}
+
+            chunks = _quiz_chunks(_quiz_plan(num_questions, q_type, level))
+            sys_instr = QUIZ_SYSTEM_PROMPT
+
+            async def gen_chunk(i, chunk):
+                kind = {"mcq": 'TRẮC NGHIỆM ("type": "mcq")', "essay": 'TỰ LUẬN ("type": "essay")'}
+                lines = "\n".join(f'- Câu {k + 1}: {kind[t]}, mức {QUIZ_LEVEL_LABEL[lv]} ("level": "{lv}")'
+                                  for k, (t, lv) in enumerate(chunk["plan"]))
+                focus = (f"\nĐây là phần {i + 1}/{len(chunks)} của một đề (các phần khác soạn riêng). Để KHÔNG TRÙNG câu với phần khác, "
+                         f"phần này TẬP TRUNG vào: {chunk['focus']}.") if len(chunks) > 1 else ""
+                prompt = [
+                    f"Đây là phần nội dung giáo viên đã khoanh vùng trên bảng. Tạo ĐÚNG {len(chunk['plan'])} câu theo bảng sau:\n{lines}{focus}",
+                    img_part,
+                ]
+                n = len(chunk["plan"])
+                try:
+                    res = await call_llm(prompt, sys_instr, hedge_delay=10.0, total_timeout=25.0 + n * 4.0)
+                except Exception as e:
+                    print(f"[QUIZ] Phần {i + 1} lỗi: {e}")
+                    return {}
+                return res if isinstance(res, dict) else {}
+
+            results = await asyncio.gather(*(gen_chunk(i, c) for i, c in enumerate(chunks)))
+            questions, topic = [], ""
+            for res in results:
+                topic = topic or res.get("topic", "")
+                for q in res.get("questions", []) or []:
+                    if not isinstance(q, dict) or not q.get("question"):
+                        continue
+                    opts = q.get("options")
+                    if isinstance(opts, dict) and len(opts) >= 2 and str(q.get("answer", "")).upper() in opts:
+                        q["type"] = "mcq"
+                        q["answer"] = str(q["answer"]).upper()
+                    else:
+                        q["type"] = "essay"
+                        q["solution"] = q.get("solution") or q.get("explanation") or ""
+                    q["id"] = len(questions) + 1
+                    questions.append(q)
+            if not questions:
+                await websocket.send_json({"type": "error", "message": "Phần khoanh vùng trống hoặc chữ quá mờ. Hãy viết rõ nội dung hóa học và thử lại!"})
+            else:
+                await send_log("QuizAgent", f"✅ Đã tạo {len(questions)} câu về: {topic}")
+                await websocket.send_json({"type": "result_quiz", "topic": topic or "Hóa học", "questions": questions})
 
     except WebSocketDisconnect:
         print("Client disconnected")
