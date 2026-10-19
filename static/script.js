@@ -326,7 +326,7 @@ function setMode(mode) {
 document.getElementById('btn-tool-draw')?.addEventListener('click', () => setMode('draw'));
 document.getElementById('btn-tool-move')?.addEventListener('click', () => setMode('move'));
 document.getElementById('btn-tool-text')?.addEventListener('click', () => setMode('text'));
-// Khoanh vùng (nút tròn): bấm lần nữa khi đang khoanh vùng thì quay về bút
+// Khoanh vùng (thanh công cụ dưới): bấm lần nữa khi đang khoanh vùng thì quay về bút
 document.getElementById('fab-lasso')?.addEventListener('click', () => setMode(currentMode === 'lasso' ? 'draw' : 'lasso'));
 
 const btnSidebarErase = document.getElementById('btn-sidebar-erase');
@@ -654,7 +654,7 @@ document.addEventListener('pointerup', (e) => {
     const dataURL = cropCanvas(lx, ly, w, h);
     lastLassoCrop = { dataURL, x: lx, y: ly, w, h };
 
-    // Không hiện thanh nút nổi: dùng ⚡/✏️ ở nút tròn để nhận dạng, nút Tẩy để xóa vùng, Esc hoặc bấm ra ngoài để hủy
+    // Không hiện thanh nút nổi: dùng ⚡/✏️ ở thanh công cụ dưới để nhận dạng, nút Tẩy để xóa vùng, Esc hoặc bấm ra ngoài để hủy
 });
 
 // Esc → hủy vùng khoanh
@@ -925,14 +925,47 @@ function cropCanvas(cssX, cssY, cssW, cssH) {
 
 
 
+// ---- Lệnh giọng nói đơn giản: xử lý NGAY trên máy, không cần gọi AI ----
+const VOICE_COLORS = [
+    [/xanh (lá|lục)/, '#10b981'], [/xanh (dương|da trời|biển)|xanh nước biển/, '#3b82f6'],
+    [/đỏ/, '#ef4444'], [/vàng/, '#f59e0b'], [/trắng/, '#ffffff'],
+];
+function localVoiceCommand(text) {
+    const t = text.toLowerCase().normalize('NFC').replace(/[.!?,]+$/g, '').replace(/\s+/g, ' ').trim();
+    const cmd = (action, reply, args) => ({ type: 'command', action, args: args || {}, reply });
+    if (/^(hoàn tác|quay lại|undo)( đi| lại)?$/.test(t)) return cmd('undo', 'Đã hoàn tác');
+    if (/^(làm lại|redo)( đi)?$/.test(t)) return cmd('redo', 'Đã làm lại');
+    if (/^(xóa|xoá) (hết|sạch|toàn bộ|tất cả)( bảng| trang)?( đi)?$|^(xóa|xoá) (bảng|trang)( đi)?$/.test(t)) return cmd('clear_board', 'Đã xóa toàn bộ bảng');
+    if (/^(chuyển |dùng |chọn |lấy )?(sang )?(bút|bút vẽ|viết)( vẽ)?$/.test(t)) return cmd('set_mode', 'Đã chuyển sang bút', { mode: 'draw' });
+    if (/^(chuyển |dùng |chọn |lấy )?(sang )?(cục )?tẩy$/.test(t)) return cmd('set_mode', 'Đã chuyển sang tẩy', { mode: 'erase' });
+    if (/^(chuyển |dùng |chọn )?(sang )?khoanh vùng$/.test(t)) return cmd('set_mode', 'Đã chuyển sang khoanh vùng', { mode: 'lasso' });
+    if (/^làm đẹp( chữ)?( đi)?$/.test(t)) return cmd('beautify_text', 'Đang làm đẹp chữ');
+    if (/^(trực quan hóa|trực quan hoá|phân tích)( phản ứng| bảng)?( đi)?$/.test(t)) return cmd('analyze', 'Đang xử lý');
+    if (/^đọc (bài|bài này|lên|to|văn bản)( đi)?$/.test(t)) return cmd('read_text', 'Đang đọc văn bản');
+    // Đổi màu BÚT (không nói tới chữ/vùng cụ thể nào): "màu đỏ", "đổi sang màu xanh lá"
+    const m = t.match(/^(đổi |chuyển |dùng |chọn )?(sang )?(bút )?màu (.+)$/);
+    if (m) {
+        const name = m[4].replace(/ đi$/, '');
+        const hit = VOICE_COLORS.find(([re]) => new RegExp(`^(${re.source})$`).test(name));
+        if (hit) return cmd('change_color', 'Đã đổi màu bút', { color: hit[1] });
+    }
+    return null;
+}
+// Câu nói có nhắc tới nội dung TRÊN BẢNG (xóa phần…, đổi màu chữ…) thì AI mới cần xem ảnh bảng
+const VOICE_NEEDS_BOARD = /xóa|xoá|tô|màu|đọc|bảng|cái này|chỗ này|phần này|bài này|trên đây|ở trên|ở dưới|viết|chữ/;
+
 // ---- Hàm dùng chung cho Voice Agent (thay thế duplicate code) ----
 function sendVoiceToAI(fullText) {
+    const local = localVoiceCommand(fullText);
+    if (local) { handleVoiceAgentResult(local); return; }
+
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/analyze`);
+    // Chụp ảnh bảng trước khi mở kết nối (song song), chỉ khi câu nói cần tới bảng
+    const imgData = VOICE_NEEDS_BOARD.test(fullText.toLowerCase()) ? getCanvasImageData() : null;
 
     ws.onopen = () => {
         setLoading(true, 'AI đang xử lý lệnh giọng nói...');
-        const imgData = getCanvasImageData();
         ws.send(JSON.stringify({ text: fullText, action: 'voice_agent', image: imgData }));
     };
 
@@ -1536,10 +1569,8 @@ function handleVoiceAgentResult(res) {
             });
         }
     }
-    
-    if (res.reply) {
-        playTTS(res.reply);
-    }
+    // Không tự đọc câu báo kết quả ("Đã xóa bảng"...) — giáo viên chỉ cần thấy bảng thay đổi.
+    // Muốn nghe thì dùng lệnh "đọc bài này" hoặc nút loa trên khung khái niệm.
 }
 
 function playTTS(text) {
@@ -2506,7 +2537,7 @@ function buildChemWidget(data) {
             <span class="cw-eq-text">${escHtml(equation)}</span>
             <span class="cw-note-text">${escHtml(note)}</span>
             <button class="cw-quiz-cta" onclick="quizOpenModal()">
-                <i class="fas fa-question-circle"></i> 🎯 Tạo bài tập trắc nghiệm về phản ứng này
+                <i class="fas fa-question-circle"></i> 📝 Tạo bài tập về phản ứng này
             </button>
         </div>
 
@@ -3546,13 +3577,9 @@ function escHtml(s) {
 }
 
 // ============================================================
-//  FLOATING MENU (FAB) LOGIC
-//  Dragging & viewport clamping are managed by page_manager.js (Req #1)
+//  CỤM AI Ở THANH CÔNG CỤ DƯỚI (Trực quan hóa, Làm đẹp chữ, Khoanh vùng, Quiz)
+//  (id vẫn giữ tiền tố fab- từ thời còn nút tròn)
 // ============================================================
-const floatingMenu = document.getElementById('floating-menu');
-const floatingMainBtn = document.getElementById('floating-main-btn');
-
-// Wiring FAB actions — menu chỉ mở/đóng khi bấm nút (+), chọn chức năng con không tự thu menu lại
 
 // Xóa các nét/chữ nằm trong vùng đang khoanh (dùng cho nút Tẩy khi có vùng chọn)
 function eraseLassoRegion() {
@@ -3763,10 +3790,11 @@ if (SpeechRecognition) {
         }
         window._currentInterim = interimTrans;
         
+        // SPEED: câu đã chốt (không còn phần đang nghe dở) → dừng sau 0,7 s; còn đang nói dở → chờ 1,2 s
         clearTimeout(silenceTimer);
         silenceTimer = setTimeout(() => {
             if (isRecording) recognition.stop();
-        }, 1500); // 1.5 seconds of silence stops recording
+        }, interimTrans.trim() ? 1200 : 700);
     };
 
     recognition.onerror = (event) => {
@@ -3896,14 +3924,16 @@ const quizState = {
     questions: [],
     topic: '',
     currentIdx: 0,
-    answers: {},      // { qId: selectedOption }
+    answers: {},      // { qId: 'A'..'D' } với trắc nghiệm, { qId: 'shown' } với tự luận đã xem lời giải
     numQuestions: 5,
+    questionType: 'mcq',   // mcq | essay | mixed
+    level: 'mixed',        // nhan_biet | thong_hieu | van_dung | van_dung_cao | mixed
     answered: false,
 };
+const QUIZ_MAX_QUESTIONS = 20;
 
 // ---- DOM refs ----
 const quizModal          = document.getElementById('quiz-modal');
-const quizBackdrop       = document.getElementById('quiz-backdrop');
 const quizSetupScreen    = document.getElementById('quiz-setup-screen');
 const quizLoadingScreen  = document.getElementById('quiz-loading-screen');
 const quizQuestionScreen = document.getElementById('quiz-question-screen');
@@ -3934,7 +3964,7 @@ function quizShowScreen(screenId) {
     document.getElementById(screenId).classList.remove('hidden');
 }
 
-// Thông báo ngay trong cửa sổ Quiz (thông báo nổi đã tắt nên lỗi phải hiện tại đây)
+// Thông báo ngay trong cửa sổ (thông báo nổi đã tắt nên lỗi phải hiện tại đây)
 function quizSetupMessage(msg) {
     const el = document.getElementById('quiz-setup-msg');
     if (!el) return;
@@ -3942,10 +3972,10 @@ function quizSetupMessage(msg) {
     el.classList.toggle('hidden', !msg);
 }
 
-// Quiz chỉ tạo từ PHẦN ĐÃ KHOANH VÙNG: trả về lý do chưa tạo được, hoặc '' nếu sẵn sàng
+// Bài tập chỉ tạo từ PHẦN ĐÃ KHOANH VÙNG: trả về lý do chưa tạo được, hoặc '' nếu sẵn sàng
 function quizBlockReason() {
     if (!lastLassoCrop) {
-        return '⭕ Hãy dùng nút Khoanh vùng (trong nút tròn) để khoanh phần nội dung cần tạo Quiz, rồi bấm Tạo Quiz.';
+        return '⭕ Hãy dùng nút Khoanh vùng ở thanh công cụ dưới để khoanh phần nội dung cần tạo bài tập, rồi bấm Tạo bài tập.';
     }
     if (typeof getObjectsInLasso === 'function' && getObjectsInLasso(lastLassoCrop).length === 0) {
         return '✏️ Vùng khoanh đang trống — hãy khoanh đúng phần có phương trình hoặc nội dung hóa học.';
@@ -3965,16 +3995,33 @@ function quizCloseModal() {
     quizModal.classList.add('hidden');
 }
 
-// ---- Num selector ----
-document.querySelectorAll('.quiz-num-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        document.querySelectorAll('.quiz-num-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        quizState.numQuestions = parseInt(btn.dataset.num);
+// ---- Tùy chọn: loại bài tập, số câu, mức độ ----
+function bindQuizChips(groupId, key) {
+    const group = document.getElementById(groupId);
+    if (!group) return;
+    group.querySelectorAll('.quiz-chip').forEach(btn => {
+        btn.addEventListener('click', () => {
+            group.querySelectorAll('.quiz-chip').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            quizState[key] = btn.dataset.val;
+        });
     });
-});
+}
+bindQuizChips('quiz-type-chips', 'questionType');
+bindQuizChips('quiz-level-chips', 'level');
 
-// ---- FAB Button: Quiz ----
+const quizNumInput = document.getElementById('quiz-num-input');
+function setQuizNum(n) {
+    n = Math.max(1, Math.min(QUIZ_MAX_QUESTIONS, parseInt(n, 10) || 1));
+    quizState.numQuestions = n;
+    quizNumInput.value = n;
+}
+document.getElementById('quiz-num-dec').addEventListener('click', () => setQuizNum(quizState.numQuestions - 1));
+document.getElementById('quiz-num-inc').addEventListener('click', () => setQuizNum(quizState.numQuestions + 1));
+quizNumInput.addEventListener('change', () => setQuizNum(quizNumInput.value));
+quizNumInput.addEventListener('keydown', (e) => e.stopPropagation());   // không để phím tắt của bảng bắt phím số
+
+// ---- Nút Tạo bài tập trên thanh công cụ ----
 const fabQuiz = document.getElementById('fab-quiz');
 if (fabQuiz) {
     fabQuiz.addEventListener('click', () => {
@@ -3982,10 +4029,10 @@ if (fabQuiz) {
     });
 }
 
-
-// ---- Start Quiz ----
+// ---- Start ----
 document.getElementById('quiz-start-btn').addEventListener('click', () => {
     if (quizBlockReason()) { quizOpenModal(); return; }
+    setQuizNum(quizNumInput.value);
     quizSetupMessage('');
     quizShowScreen('quiz-loading-screen');
     quizLoadingLog.textContent = '';
@@ -3995,10 +4042,11 @@ document.getElementById('quiz-start-btn').addEventListener('click', () => {
     startQuizGeneration();
 });
 
-// ---- Close / Exit / Retry ----
+// ---- Close / Exit ----
 document.getElementById('quiz-close-btn').addEventListener('click', quizCloseModal);
 document.getElementById('quiz-exit-btn').addEventListener('click', quizCloseModal);
 document.getElementById('quiz-backdrop').addEventListener('click', quizCloseModal);
+document.getElementById('quiz-x-btn').addEventListener('click', quizCloseModal);
 
 document.getElementById('quiz-retry-btn').addEventListener('click', () => {
     quizState.answers = {};
@@ -4008,28 +4056,34 @@ document.getElementById('quiz-retry-btn').addEventListener('click', () => {
     quizShowScreen('quiz-question-screen');
 });
 
-// ---- Navigation buttons ----
-document.getElementById('quiz-next-btn').addEventListener('click', () => {
-    quizState.currentIdx++;
+// ---- Next / Finish ----
+function goToQuizQuestion(idx) {
+    if (idx < 0 || idx >= quizState.questions.length || idx === quizState.currentIdx) return;
+    quizState.currentIdx = idx;
     quizState.answered = false;
     renderQuizQuestion();
-});
+}
+document.getElementById('quiz-next-btn').addEventListener('click', () => goToQuizQuestion(quizState.currentIdx + 1));
+document.getElementById('quiz-prev-btn').addEventListener('click', () => goToQuizQuestion(quizState.currentIdx - 1));
 
 document.getElementById('quiz-finish-btn').addEventListener('click', () => {
     showQuizResult();
 });
 
-// ---- WebSocket: Generate Quiz ----
-// Map category code → label hiển thị
-const QUIZ_CATEGORY_LABELS = {
-    'nhận_biết':      { label: '🔬 Nhận biết chất',   color: '#3b82f6' },
-    'nhận_biết_chất': { label: '🔬 Nhận biết chất',   color: '#3b82f6' },
-    'loại_phản_ứng': { label: '⚗️ Loại phản ứng',    color: '#8b5cf6' },
-    'sản_phẩm':      { label: '🧪 Sản phẩm & Hiện tượng', color: '#0891b2' },
-    'cân_bằng':      { label: '⚖️ Cân bằng phương trình', color: '#d97706' },
-    'ứng_dụng':      { label: '🏭 Ứng dụng thực tế',  color: '#059669' },
-    'an_toàn':       { label: '⚠️ An toàn thí nghiệm', color: '#dc2626' },
+// ---- WebSocket: Generate ----
+// Mức độ nhận thức → nhãn hiển thị
+const QUIZ_LEVEL_LABELS = {
+    'nhận_biết':    { label: 'Nhận biết',    color: '#3b82f6' },
+    'thông_hiểu':   { label: 'Thông hiểu',   color: '#0891b2' },
+    'vận_dụng':     { label: 'Vận dụng',     color: '#d97706' },
+    'vận_dụng_cao': { label: 'Vận dụng cao', color: '#dc2626' },
 };
+const isEssay = (q) => q.type === 'essay';
+function quizBadgeInfo(q) {
+    const lv = QUIZ_LEVEL_LABELS[(q.level || '').toLowerCase()];
+    const kind = isEssay(q) ? '✍️ Tự luận' : '☑️ Trắc nghiệm';
+    return { label: lv ? `${kind} · ${lv.label}` : kind, color: lv ? lv.color : '#6366f1' };
+}
 
 function startQuizGeneration() {
     // Chỉ gửi ảnh PHẦN ĐÃ KHOANH VÙNG (không dùng toàn bộ bảng)
@@ -4044,6 +4098,8 @@ function startQuizGeneration() {
             action: 'quiz_generate',
             image: imageData,
             num_questions: quizState.numQuestions,
+            question_type: quizState.questionType,
+            level: quizState.level,
         }));
     };
 
@@ -4057,16 +4113,15 @@ function startQuizGeneration() {
 
         if (msg.type === 'result_quiz') {
             quizState.questions = msg.questions || [];
-            quizState.topic = msg.topic || 'Trắc nghiệm';
+            quizState.topic = msg.topic || 'Bài tập';
             ws.close();
 
             if (quizState.questions.length === 0) {
                 quizShowScreen('quiz-setup-screen');
-                quizSetupMessage('⚠️ AI không tìm thấy nội dung hóa học rõ ràng trên bảng để tạo câu hỏi. Hãy viết rõ phương trình hoặc khoanh vùng nội dung rồi thử lại.');
+                quizSetupMessage('⚠️ AI không tìm thấy nội dung hóa học rõ ràng trong phần khoanh vùng. Hãy viết rõ phương trình rồi thử lại.');
                 return;
             }
 
-            // Start quiz
             renderQuizQuestion();
             quizShowScreen('quiz-question-screen');
             return;
@@ -4075,7 +4130,7 @@ function startQuizGeneration() {
         if (msg.type === 'error') {
             ws.close();
             quizShowScreen('quiz-setup-screen');
-            quizSetupMessage('⚠️ ' + (msg.message || 'Lỗi khi tạo Quiz, hãy thử lại.'));
+            quizSetupMessage('⚠️ ' + (msg.message || 'Lỗi khi tạo bài tập, hãy thử lại.'));
         }
     };
 
@@ -4102,53 +4157,69 @@ function renderQuizQuestion() {
     quizCard.style.animation = 'none';
     requestAnimationFrame(() => { quizCard.style.animation = ''; });
 
-    // Category badge
-    const catKey = (q.category || '').toLowerCase();
-    const catInfo = QUIZ_CATEGORY_LABELS[catKey] || { label: '📝 Câu hỏi', color: '#6366f1' };
+    // Nhãn loại câu + mức độ
+    const badge = quizBadgeInfo(q);
     let catBadge = quizCard.querySelector('.quiz-category-badge');
     if (!catBadge) {
         catBadge = document.createElement('div');
         catBadge.className = 'quiz-category-badge';
         quizQuestionNum.parentNode.insertBefore(catBadge, quizQuestionNum);
     }
-    catBadge.textContent = catInfo.label;
+    catBadge.textContent = badge.label;
     catBadge.style.cssText = `
         display:inline-block; font-size:11px; font-weight:700; letter-spacing:.5px;
         padding:3px 10px; border-radius:20px; margin-bottom:8px;
-        background:${catInfo.color}22; color:${catInfo.color}; border:1px solid ${catInfo.color}44;
+        background:${badge.color}22; color:${badge.color}; border:1px solid ${badge.color}44;
     `;
 
     quizQuestionNum.textContent  = `CÂU ${idx + 1}`;
     quizQuestionText.textContent = q.question;
 
-    // Options
+    // Phương án (trắc nghiệm) hoặc nút xem lời giải (tự luận)
     quizOptionsEl.innerHTML = '';
-    const optionKeys = ['A', 'B', 'C', 'D'];
-    optionKeys.forEach(key => {
-        if (!q.options[key]) return;
+    if (isEssay(q)) {
         const btn = document.createElement('button');
-        btn.className = 'quiz-option';
-        btn.dataset.key = key;
-        btn.innerHTML = `<span class="quiz-option-key">${key}</span><span>${q.options[key]}</span>`;
-        btn.addEventListener('click', () => selectAnswer(q, key));
+        btn.className = 'quiz-btn quiz-btn-ghost quiz-solution-btn';
+        btn.innerHTML = '<i class="fas fa-eye"></i> Xem lời giải';
+        btn.addEventListener('click', () => revealSolution(q));
         quizOptionsEl.appendChild(btn);
-    });
+    } else {
+        ['A', 'B', 'C', 'D'].forEach(key => {
+            if (!q.options || !q.options[key]) return;
+            const btn = document.createElement('button');
+            btn.className = 'quiz-option';
+            btn.dataset.key = key;
+            btn.innerHTML = `<span class="quiz-option-key">${key}</span><span>${escHtml(q.options[key])}</span>`;
+            btn.addEventListener('click', () => selectAnswer(q, key));
+            quizOptionsEl.appendChild(btn);
+        });
+    }
 
     // Hide explanation
     quizExplanation.classList.add('hidden');
     quizExplanationTxt.textContent = '';
 
-    // Nav buttons
-    quizNextBtn.classList.add('hidden');
-    quizFinishBtn.classList.add('hidden');
+    showNavButtons();
 
     // Restore previous answer if retry
     const prevAnswer = quizState.answers[q.id];
     if (prevAnswer !== undefined) {
-        applyAnswerHighlight(q, prevAnswer);
-        showExplanation(q.explanation);
-        showNavButtons();
+        if (isEssay(q)) revealSolution(q);
+        else {
+            applyAnswerHighlight(q, prevAnswer);
+            showExplanation(q.explanation);
+            showNavButtons();
+        }
     }
+}
+
+// ---- Tự luận: hiện lời giải mẫu ----
+function revealSolution(q) {
+    quizState.answers[q.id] = 'shown';
+    const btn = quizOptionsEl.querySelector('.quiz-solution-btn');
+    if (btn) btn.remove();
+    showExplanation(q.solution || 'Chưa có lời giải mẫu.', true);
+    showNavButtons();
 }
 
 // ---- Select Answer ----
@@ -4176,75 +4247,148 @@ function applyAnswerHighlight(q, chosenKey) {
     });
 }
 
-function showExplanation(text) {
-    quizExplanationTxt.textContent = text || '';
+function showExplanation(text, isSolution = false) {
+    quizExplanationTxt.textContent = isSolution ? 'Lời giải: \n' + text : (text || '');
+    quizExplanation.classList.toggle('quiz-solution', isSolution);
     quizExplanation.classList.remove('hidden');
 }
 
+// Thanh điều hướng: Câu trước / ô số từng câu / Câu sau — đi lại tự do, không bắt buộc trả lời
 function showNavButtons() {
-    const isLast = quizState.currentIdx === quizState.questions.length - 1;
-    if (isLast) {
-        quizFinishBtn.classList.remove('hidden');
-        quizNextBtn.classList.add('hidden');
-    } else {
-        quizNextBtn.classList.remove('hidden');
-        quizFinishBtn.classList.add('hidden');
-    }
+    const total = quizState.questions.length;
+    const idx = quizState.currentIdx;
+    const isLast = idx === total - 1;
+    document.getElementById('quiz-prev-btn').disabled = idx === 0;
+    quizNextBtn.classList.toggle('hidden', isLast);
+    quizFinishBtn.classList.toggle('hidden', !isLast);
+    const dots = document.getElementById('quiz-dots');
+    dots.innerHTML = '';
+    quizState.questions.forEach((q, i) => {
+        const d = document.createElement('button');
+        d.className = 'quiz-dot' + (i === idx ? ' current' : '') + (quizState.answers[q.id] !== undefined ? ' done' : '');
+        d.textContent = i + 1;
+        d.title = `Câu ${i + 1}${isEssay(q) ? ' (tự luận)' : ''}`;
+        d.addEventListener('click', () => goToQuizQuestion(i));
+        dots.appendChild(d);
+    });
 }
+
+// ---- Khung câu hỏi: chỉnh cỡ chữ, phóng to, kéo đổi kích thước, kéo di chuyển ----
+const quizContainer = document.querySelector('.quiz-container');
+let quizFontScale = 1;
+try { quizFontScale = parseFloat(localStorage.getItem('quizFontScale')) || 1; } catch (e) { /* bỏ qua */ }
+function setQuizFontScale(v) {
+    quizFontScale = Math.round(Math.max(0.7, Math.min(2.2, v)) * 10) / 10;
+    quizContainer.style.setProperty('--quiz-scale', quizFontScale);
+    document.getElementById('quiz-font-val').textContent = Math.round(quizFontScale * 100) + '%';
+    try { localStorage.setItem('quizFontScale', quizFontScale); } catch (e) { /* bỏ qua */ }
+}
+setQuizFontScale(quizFontScale);
+document.getElementById('quiz-font-dec').addEventListener('click', () => setQuizFontScale(quizFontScale - 0.1));
+document.getElementById('quiz-font-inc').addEventListener('click', () => setQuizFontScale(quizFontScale + 0.1));
+document.getElementById('quiz-expand-btn').addEventListener('click', () => {
+    const big = quizContainer.classList.toggle('quiz-expanded');
+    quizContainer.style.width = quizContainer.style.height = '';
+    quizContainer.style.translate = '';
+    document.querySelector('#quiz-expand-btn i').className = big ? 'fas fa-compress' : 'fas fa-expand';
+});
+// Kéo thanh trên cùng để dời khung
+(() => {
+    const bar = document.getElementById('quiz-toolbar');
+    let drag = null;
+    bar.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('button')) return;
+        const [tx, ty] = (quizContainer.style.translate || '0px 0px').split(' ').map(v => parseFloat(v) || 0);
+        drag = { x: e.clientX - tx, y: e.clientY - ty };
+        bar.setPointerCapture(e.pointerId);
+        bar.classList.add('dragging');
+    });
+    bar.addEventListener('pointermove', (e) => {
+        if (!drag) return;
+        quizContainer.style.translate = `${e.clientX - drag.x}px ${e.clientY - drag.y}px`;
+    });
+    const end = () => { drag = null; bar.classList.remove('dragging'); };
+    bar.addEventListener('pointerup', end);
+    bar.addEventListener('pointercancel', end);
+})();
+// Phím ← → để chuyển câu khi đang làm bài
+document.addEventListener('keydown', (e) => {
+    if (quizModal.classList.contains('hidden') || quizQuestionScreen.classList.contains('hidden')) return;
+    if (e.target.closest && e.target.closest('input, textarea')) return;
+    if (e.key === 'Escape') { quizCloseModal(); e.preventDefault(); return; }
+    if (e.key === 'ArrowRight') { goToQuizQuestion(quizState.currentIdx + 1); e.preventDefault(); }
+    if (e.key === 'ArrowLeft') { goToQuizQuestion(quizState.currentIdx - 1); e.preventDefault(); }
+});
 
 // ---- Result Screen ----
 function showQuizResult() {
     const questions = quizState.questions;
     const answers   = quizState.answers;
-    const total     = questions.length;
+    const mcq       = questions.filter(q => !isEssay(q));
+    const total     = mcq.length;
     let correct     = 0;
 
-    questions.forEach(q => {
+    mcq.forEach(q => {
         const chosen  = (answers[q.id] || '').toUpperCase();
         const rightKey = (q.answer || '').toUpperCase();
         if (chosen === rightKey) correct++;
     });
 
-    // Score circle — update conic gradient
-    const pct = total > 0 ? (correct / total) * 100 : 0;
-    quizScoreCircle.style.background =
-        `conic-gradient(#10b981 ${pct}%, rgba(255,255,255,0.05) ${pct}%)`;
+    // Điểm chỉ tính phần trắc nghiệm; đề toàn tự luận thì hiện số câu
+    if (total > 0) {
+        const pct = (correct / total) * 100;
+        quizScoreCircle.style.background =
+            `conic-gradient(#10b981 ${pct}%, rgba(255,255,255,0.05) ${pct}%)`;
+        quizScoreNum.textContent   = correct;
+        quizScoreTotal.textContent = `/${total}`;
 
-    quizScoreNum.textContent   = correct;
-    quizScoreTotal.textContent = `/${total}`;
-
-    // Label
-    const ratio = correct / total;
-    let label = '';
-    if (ratio >= 0.9)      label = 'Xuất sắc! 🏆';
-    else if (ratio >= 0.7) label = 'Giỏi! 🌟';
-    else if (ratio >= 0.5) label = 'Khá tốt! 👍';
-    else                   label = 'Cần cố gắng thêm! 💪';
-    quizScoreLabel.textContent = label;
+        const ratio = correct / total;
+        let label = '';
+        if (ratio >= 0.9)      label = 'Xuất sắc! 🏆';
+        else if (ratio >= 0.7) label = 'Giỏi! 🌟';
+        else if (ratio >= 0.5) label = 'Khá tốt! 👍';
+        else                   label = 'Cần cố gắng thêm! 💪';
+        const essays = questions.length - total;
+        quizScoreLabel.textContent = essays ? `${label} (phần trắc nghiệm · ${essays} câu tự luận xem lời giải bên dưới)` : label;
+    } else {
+        quizScoreCircle.style.background = 'conic-gradient(#3b82f6 100%, rgba(255,255,255,0.05) 0%)';
+        quizScoreNum.textContent   = questions.length;
+        quizScoreTotal.textContent = ' câu';
+        quizScoreLabel.textContent = 'Bài tự luận — đối chiếu lời giải bên dưới ✍️';
+    }
 
     // Review list
     quizReview.innerHTML = '';
     questions.forEach((q, i) => {
-        const chosen   = (answers[q.id] || '?').toUpperCase();
-        const rightKey = (q.answer || '').toUpperCase();
-        const isRight  = chosen === rightKey;
-        const catKey   = (q.category || '').toLowerCase();
-        const catInfo  = QUIZ_CATEGORY_LABELS[catKey] || { label: '📝', color: '#6366f1' };
-
+        const badge = quizBadgeInfo(q);
         const item = document.createElement('div');
-        item.className = `quiz-review-item ${isRight ? 'review-correct' : 'review-wrong'}`;
-        item.innerHTML = `
-            <div class="quiz-review-icon">${isRight ? '✅' : '❌'}</div>
-            <div class="quiz-review-content">
-                <div style="font-size:10px;color:${catInfo.color};font-weight:700;margin-bottom:4px;">${catInfo.label}</div>
-                <div class="quiz-review-q"><strong>Câu ${i + 1}:</strong> ${q.question}</div>
-                <div class="quiz-review-ans">
-                    ${!isRight ? `<span class="your-ans">Bạn chọn: ${chosen} — ${q.options[chosen] || '?'}</span>` : ''}
-                    <span class="correct-ans">✔ Đáp án: ${rightKey} — ${q.options[rightKey] || ''}</span>
-                </div>
-                ${q.explanation ? `<div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.1);">💡 ${q.explanation}</div>` : ''}
-            </div>
-        `;
+        const note = `<div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.1);white-space:pre-line;">`;
+        if (isEssay(q)) {
+            item.className = 'quiz-review-item review-essay';
+            item.innerHTML = `
+                <div class="quiz-review-icon">✍️</div>
+                <div class="quiz-review-content">
+                    <div style="font-size:10px;color:${badge.color};font-weight:700;margin-bottom:4px;">${badge.label}</div>
+                    <div class="quiz-review-q"><strong>Câu ${i + 1}:</strong> ${escHtml(q.question)}</div>
+                    ${note}📘 ${escHtml(q.solution || '')}</div>
+                </div>`;
+        } else {
+            const chosen   = (answers[q.id] || '?').toUpperCase();
+            const rightKey = (q.answer || '').toUpperCase();
+            const isRight  = chosen === rightKey;
+            item.className = `quiz-review-item ${isRight ? 'review-correct' : 'review-wrong'}`;
+            item.innerHTML = `
+                <div class="quiz-review-icon">${isRight ? '✅' : '❌'}</div>
+                <div class="quiz-review-content">
+                    <div style="font-size:10px;color:${badge.color};font-weight:700;margin-bottom:4px;">${badge.label}</div>
+                    <div class="quiz-review-q"><strong>Câu ${i + 1}:</strong> ${escHtml(q.question)}</div>
+                    <div class="quiz-review-ans">
+                        ${!isRight ? `<span class="your-ans">Bạn chọn: ${chosen} — ${escHtml(q.options[chosen] || '?')}</span>` : ''}
+                        <span class="correct-ans">✔ Đáp án: ${rightKey} — ${escHtml(q.options[rightKey] || '')}</span>
+                    </div>
+                    ${q.explanation ? `${note}💡 ${escHtml(q.explanation)}</div>` : ''}
+                </div>`;
+        }
         quizReview.appendChild(item);
     });
 
