@@ -653,8 +653,6 @@ document.addEventListener('pointerup', (e) => {
     // Lưu crop data phục vụ AI nếu cần
     const dataURL = cropCanvas(lx, ly, w, h);
     lastLassoCrop = { dataURL, x: lx, y: ly, w, h };
-
-    // Không hiện thanh nút nổi: dùng ⚡/✏️ ở thanh công cụ dưới để nhận dạng, nút Tẩy để xóa vùng, Esc hoặc bấm ra ngoài để hủy
 });
 
 // Esc → hủy vùng khoanh
@@ -892,7 +890,29 @@ function clearLasso() {
     lassoMove = null;
     if (lassoOverlay) { lassoOverlay.remove(); lassoOverlay = null; }
     document.getElementById('lasso-actions-pill')?.remove();
+    document.getElementById('lasso-check-pill')?.remove();
     lastLassoCrop = null;
+}
+
+function showLassoCheckActionPill(x, y, w) {
+    document.getElementById('lasso-check-pill')?.remove();
+    const pill = document.createElement('div');
+    pill.id = 'lasso-check-pill';
+    pill.className = 'lasso-check-pill';
+    pill.style.cssText = `position: absolute; left: ${Math.max(10, x)}px; top: ${Math.max(10, y - 40)}px; z-index: 1000; display: flex; gap: 6px;`;
+    pill.innerHTML = `
+        <button id="btn-pill-check-eq" class="lasso-pill-btn" title="Kiểm tra phương trình hóa học viết tay">
+            <i class="fas fa-check-circle"></i> Kiểm tra
+        </button>
+    `;
+    canvasEl.appendChild(pill);
+    
+    document.getElementById('btn-pill-check-eq')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (lastLassoCrop) {
+            requestEquationCheckOCR(lastLassoCrop);
+        }
+    });
 }
 
 // ---- CROP: Pure DOM canvas — correctly handles devicePixelRatio ----
@@ -2166,6 +2186,9 @@ function showRedAlertShield(safetyData, equation) {
                 ${safeAlt ? `<button class="red-alert-btn-alt" id="red-alert-alt-btn"><i class="fas fa-check-circle"></i> Đã ghi nhận Thí nghiệm Thay thế</button>` : ''}
                 <button class="red-alert-btn-close" id="red-alert-close-btn"><i class="fas fa-times"></i> Đã hiểu &amp; Đóng cảnh báo</button>
             </div>
+            <div class="red-alert-footer-disclaimer" style="text-align:center; font-size:0.75rem; color:#94a3b8; margin-top:14px; font-style:italic; line-height:1.4;">
+                🛡️ Hệ thống không phát hiện cảnh báo không đồng nghĩa với việc phản ứng an toàn tuyệt đối. Luôn tuân thủ nội quy phòng thí nghiệm.
+            </div>
         </div>
     `;
 
@@ -2381,6 +2404,37 @@ function buildChemWidget(data) {
     if (reactants.length === 0) {
         buildGeneralWidget({ explanation: note || 'Không nhận ra phương trình hóa học.' });
         return;
+    }
+
+    // === SAFETY HARD-GUARD (BẢO VỆ PHÒNG THÍ NGHIỆM TUYỆT ĐỐI — CLIENT-SIDE FAIL-SAFE) ===
+    const eqUpper = (equation || "").toUpperCase();
+    const rJoined = (reactants || []).join(" ").toUpperCase();
+    const allTxt = eqUpper + " " + rJoined;
+
+    // 1. Rót nước vào axit đặc (H2SO4 + H2O hoặc H3O+ / HSO4- hoặc axit sunfuric)
+    if ((allTxt.includes("H2SO4") || allTxt.includes("AXIT SUNFURIC")) && 
+        (allTxt.includes("H2O") || allTxt.includes("H3O") || allTxt.includes("NƯỚC") || allTxt.includes("NUOC"))) {
+        safety.level = 'danger';
+        safety.is_critical = true;
+        safety.reason = "CẢNH BÁO NGUY HIỂM: Tuyệt đối KHÔNG ĐƯỢC RÓT NƯỚC VÀO AXIT H₂SO₄ ĐẶC! Nước nhẹ hơn axit nên sôi cục bộ trên bề mặt, bắn tung tóe axit đặc ra ngoài gây bỏng axit nặng và mù mắt.";
+        safety.critical_safe_alt = "QUY TẮC VÀNG SGK HÓA 11: Rót từ từ axit H₂SO₄ đặc dọc theo đũa thủy tinh vào cốc nước lớn và khuấy nhẹ. TUYỆT ĐỐI KHÔNG ĐƯỢC LÀM NGƯỢC LẠI!";
+    }
+
+    // 2. Kim loại kiềm (Na, K, Li) và nước
+    if ((/\b(NA|K|LI|NATRI|KALI)\b/i.test(allTxt) || (reactants || []).some(r => ['NA','K','LI'].includes(r.toUpperCase()))) && 
+        (allTxt.includes("H2O") || allTxt.includes("NƯỚC") || allTxt.includes("NUOC"))) {
+        safety.level = 'danger';
+        safety.is_critical = true;
+        safety.reason = "CẢNH BÁO NGUY HIỂM: Kim loại kiềm phản ứng bạo liệt với nước, tỏa nhiệt cực lớn và sinh khí H₂ dễ phát nổ.";
+        safety.critical_safe_alt = "Chỉ dùng mẩu kim loại kiềm nhỏ bằng hạt gạo, dùng panh gắp, thí nghiệm phải có kính chắn bảo hộ.";
+    }
+
+    // 3. KMnO4 + H2SO4 đặc (tạo Mn2O7 dễ nổ bạo liệt)
+    if (allTxt.includes("KMNO4") && allTxt.includes("H2SO4")) {
+        safety.level = 'danger';
+        safety.is_critical = true;
+        safety.reason = "CẢNH BÁO NGUY HIỂM: KMnO₄ tác dụng với H₂SO₄ đặc sinh ra Mn₂O₇ là chất oxi hóa cực mạnh dễ phát nổ bạo liệt khi tiếp xúc chất hữu cơ!";
+        safety.critical_safe_alt = "Tuyệt đối không trộn tinh thể KMnO₄ với axit sunfuric đặc trong mọi trường hợp.";
     }
 
     // === MODULE 3: KÍCH HOẠT FULL-SCREEN RED ALERT SHIELD NẾU NGUY HIỂM / CẤM ===
@@ -3704,7 +3758,7 @@ document.getElementById('fab-analyze').addEventListener('click', () => {
     }
 });
 
-document.getElementById('fab-tts').addEventListener('click', () => {
+document.getElementById('fab-tts')?.addEventListener('click', () => {
     if (lastLassoCrop) {
         const scaleX = canvas.width / canvasEl.clientWidth;
         const scaleY = canvas.height / canvasEl.clientHeight;
@@ -3793,146 +3847,218 @@ const btnMic = document.getElementById('btn-mic');
 const vrPopup = document.getElementById('voice-recorder-popup');
 const vrTime = document.getElementById('vr-time');
 const vrBtnDelete = document.getElementById('vr-btn-delete');
-const vrBtnSend = document.getElementById('vr-btn-send');
-const vrBtnAi = document.getElementById('vr-btn-ai');
+const vrBtnMic = document.getElementById('vr-btn-mic');
+const vrBtnSubmit = document.getElementById('vr-btn-submit');
+const vrTranscriptInput = document.getElementById('vr-transcript-input');
+const vrWaves = document.getElementById('vr-waves');
 
-let recognition;
+let recognition = null;
 let isRecording = false;
-let vrTimerInterval;
+let vrTimerInterval = null;
 let vrSeconds = 0;
 let currentTranscript = "";
 let silenceTimer = null;
 
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (SpeechRecognition) {
-    recognition = new SpeechRecognition();
-    recognition.lang = 'vi-VN'; // Vietnamese
-    recognition.continuous = true;
-    recognition.interimResults = true;
-
-    recognition.onstart = () => {
-        isRecording = true;
-        btnMic.classList.add('mic-recording');
-        vrPopup.classList.remove('hidden');
-        currentTranscript = "";
-        window._currentInterim = "";
-        vrSeconds = 0;
-        updateVrTime();
-        
-        vrTimerInterval = setInterval(() => {
-            vrSeconds++;
-            updateVrTime();
-        }, 1000);
-        
+function setMicRecordingUI(active) {
+    isRecording = active;
+    if (active) {
+        btnMic?.classList.add('mic-recording');
+        vrBtnMic?.classList.add('recording');
+        if (vrWaves) vrWaves.style.display = 'flex';
+    } else {
+        btnMic?.classList.remove('mic-recording');
+        vrBtnMic?.classList.remove('recording');
+        if (vrWaves) vrWaves.style.display = 'none';
+        clearInterval(vrTimerInterval);
         clearTimeout(silenceTimer);
-        silenceTimer = setTimeout(() => {
-            if (isRecording) recognition.stop();
-        }, 4000); // 4 seconds initial wait if no speech at all
-    };
-
-    recognition.onresult = (event) => {
-        let finalTrans = "";
-        let interimTrans = "";
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-                finalTrans += event.results[i][0].transcript + " ";
-            } else {
-                interimTrans += event.results[i][0].transcript;
-            }
-        }
-        if (finalTrans) {
-            currentTranscript += finalTrans;
-        }
-        window._currentInterim = interimTrans;
-        
-        // SPEED: câu đã chốt (không còn phần đang nghe dở) → dừng sau 0,7 s; còn đang nói dở → chờ 1,2 s
-        clearTimeout(silenceTimer);
-        silenceTimer = setTimeout(() => {
-            if (isRecording) recognition.stop();
-        }, interimTrans.trim() ? 1200 : 700);
-    };
-
-    recognition.onerror = (event) => {
-        showToast('Lỗi micro: ' + event.error, 'error');
-        stopVr();
-    };
-
-    recognition.onend = () => {
-        if (isRecording) {
-            const fullText = (currentTranscript + " " + (window._currentInterim || "")).trim();
-            if (fullText) {
-                // Auto-send to AI on silence — dùng hàm chung sendVoiceToAI()
-                sendVoiceToAI(fullText);
-            }
-            currentTranscript = "";
-            window._currentInterim = "";
-            stopVr();
-        }
-    };
-
-    btnMic.addEventListener('click', () => {
-        if (!isRecording) {
-            try {
-                recognition.start();
-            } catch (e) {}
-        }
-    });
-    
-    vrBtnDelete.addEventListener('click', () => {
-        currentTranscript = "";
-        window._currentInterim = "";
-        stopVr();
-    });
-    
-    vrBtnSend.addEventListener('click', () => {
-        const fullText = (currentTranscript + " " + (window._currentInterim || "")).trim();
-        if (fullText) {
-            addTextToCanvas(fullText);
-            showToast('Đã thêm chữ vào bảng!', 'success');
-        } else {
-            showToast('Chưa nghe được gì (Có thể do bạn nói quá nhỏ hoặc trình duyệt chặn Mic)!', 'warn');
-        }
-        currentTranscript = "";
-        window._currentInterim = "";
-        stopVr();
-    });
-
-    if (vrBtnAi) {
-        vrBtnAi.addEventListener('click', () => {
-            const fullText = (currentTranscript + " " + (window._currentInterim || "")).trim();
-            if (fullText) {
-                sendVoiceToAI(fullText);
-            } else {
-                showToast('Chưa nghe được gì để hỏi AI!', 'warn');
-            }
-            currentTranscript = "";
-            window._currentInterim = "";
-            stopVr();
-        });
     }
-
-} else {
-    btnMic.addEventListener('click', () => {
-        showToast('Trình duyệt của bạn không hỗ trợ nhận diện giọng nói.', 'error');
-    });
 }
 
 function updateVrTime() {
-    const m = Math.floor(vrSeconds / 60).toString().padStart(2, '0');
-    const s = (vrSeconds % 60).toString().padStart(2, '0');
-    vrTime.textContent = `${m}:${s}`;
+    const mins = Math.floor(vrSeconds / 60).toString().padStart(2, '0');
+    const secs = (vrSeconds % 60).toString().padStart(2, '0');
+    if (vrTime) vrTime.textContent = `${mins}:${secs}`;
 }
 
 function stopVr() {
-    isRecording = false;
-    btnMic.classList.remove('mic-recording');
-    vrPopup.classList.add('hidden');
-    clearInterval(vrTimerInterval);
-    clearTimeout(silenceTimer);
+    setMicRecordingUI(false);
     if (recognition) {
-        try { recognition.stop(); } catch(e){}
+        try { recognition.abort(); } catch(e) {}
+    }
+    vrPopup?.classList.add('hidden');
+    currentTranscript = "";
+    window._currentInterim = "";
+}
+
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function startVr() {
+    // Luôn mở popup ngay lập tức để người dùng thấy phản hồi trực quan trên màn hình
+    vrPopup?.classList.remove('hidden');
+    vrSeconds = 0;
+    updateVrTime();
+    currentTranscript = "";
+    window._currentInterim = "";
+    if (vrTranscriptInput) {
+        vrTranscriptInput.value = "";
+        vrTranscriptInput.placeholder = "Đang lắng nghe giọng nói của thầy/cô... (hoặc gõ lệnh tại đây)";
+        vrTranscriptInput.focus();
+    }
+
+    if (!SpeechRecognition) {
+        setMicRecordingUI(false);
+        showToast('Trình duyệt chưa hỗ trợ nhận diện giọng nói tự động. Thầy/cô có thể gõ lệnh trực tiếp!', 'warn');
+        if (vrTranscriptInput) vrTranscriptInput.placeholder = "Nhập lệnh (ví dụ: đổi màu đỏ, xóa bảng, H2SO4)...";
+        return;
+    }
+
+    // Luôn dọn dẹp phiên trước nếu đang chạy dở
+    if (recognition) {
+        try { recognition.abort(); } catch(e) {}
+        recognition = null;
+    }
+
+    try {
+        recognition = new SpeechRecognition();
+        recognition.lang = 'vi-VN';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        recognition.onstart = () => {
+            setMicRecordingUI(true);
+            vrSeconds = 0;
+            updateVrTime();
+            
+            clearInterval(vrTimerInterval);
+            vrTimerInterval = setInterval(() => {
+                vrSeconds++;
+                updateVrTime();
+            }, 1000);
+            
+            clearTimeout(silenceTimer);
+            silenceTimer = setTimeout(() => {
+                if (isRecording && recognition) {
+                    try { recognition.stop(); } catch(e) {}
+                }
+            }, 8000);
+        };
+
+        recognition.onresult = (event) => {
+            let finalTrans = "";
+            let interimTrans = "";
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTrans += event.results[i][0].transcript + " ";
+                } else {
+                    interimTrans += event.results[i][0].transcript;
+                }
+            }
+            if (finalTrans) {
+                currentTranscript += finalTrans;
+            }
+            window._currentInterim = interimTrans;
+            
+            const previewText = (currentTranscript + " " + interimTrans).trim();
+            if (vrTranscriptInput && previewText) {
+                vrTranscriptInput.value = previewText;
+            }
+
+            clearTimeout(silenceTimer);
+            silenceTimer = setTimeout(() => {
+                if (isRecording && recognition) {
+                    try { recognition.stop(); } catch(e) {}
+                }
+            }, interimTrans.trim() ? 2500 : 1500);
+        };
+
+        recognition.onerror = (event) => {
+            console.warn('SpeechRecognition error:', event.error);
+            setMicRecordingUI(false);
+            if (event.error === 'not-allowed') {
+                showToast('Chưa cấp quyền Micro! Thầy/cô hãy cho phép micro hoặc gõ lệnh trực tiếp.', 'warn');
+                if (vrTranscriptInput) vrTranscriptInput.placeholder = "Chưa cấp quyền micro. Gõ lệnh rồi bấm Gửi...";
+            } else if (event.error === 'network') {
+                showToast('Lỗi mạng kết nối giọng nói Google. Thầy/cô có thể gõ lệnh trực tiếp.', 'warn');
+                if (vrTranscriptInput) vrTranscriptInput.placeholder = "Nhập lệnh rồi bấm Gửi thực hiện...";
+            } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                showToast('Lỗi micro: ' + event.error, 'error');
+            }
+        };
+
+        recognition.onend = () => {
+            setMicRecordingUI(false);
+            const fullText = (currentTranscript + " " + (window._currentInterim || "")).trim();
+            if (vrTranscriptInput) {
+                if (fullText) vrTranscriptInput.value = fullText;
+                vrTranscriptInput.placeholder = "Bấm [Gửi thực hiện] hoặc Enter để chạy...";
+                vrTranscriptInput.focus();
+            }
+        };
+
+        // Bật visual recording UI trước trong khi đợi trình duyệt mở mic
+        setMicRecordingUI(true);
+        recognition.start();
+    } catch (err) {
+        console.error('Lỗi khi kích hoạt SpeechRecognition:', err);
+        setMicRecordingUI(false);
+        showToast('Không thể mở micro trực tiếp. Thầy/cô có thể gõ lệnh!', 'warn');
     }
 }
+
+// Bắt sự kiện bấm nút Micro trên thanh công cụ
+btnMic?.addEventListener('click', () => {
+    if (vrPopup && vrPopup.classList.contains('hidden')) {
+        startVr();
+    } else if (isRecording) {
+        // Đang nói -> bấm để tạm dừng ghi âm
+        if (recognition) {
+            try { recognition.stop(); } catch(e) {}
+        }
+        setMicRecordingUI(false);
+    } else {
+        // Đã mở nhưng dừng -> bấm để tiếp tục nói
+        startVr();
+    }
+});
+
+// Bắt sự kiện bấm nút Micro bên trong Popup
+vrBtnMic?.addEventListener('click', () => {
+    if (isRecording) {
+        if (recognition) {
+            try { recognition.stop(); } catch(e) {}
+        }
+        setMicRecordingUI(false);
+    } else {
+        startVr();
+    }
+});
+
+// Hàm gửi lệnh khi giáo viên bấm nút [Gửi thực hiện] hoặc nhấn Enter
+const submitVoiceCommand = () => {
+    const text = vrTranscriptInput ? vrTranscriptInput.value.trim() : "";
+    if (text) {
+        sendVoiceToAI(text);
+    } else {
+        showToast('Chưa có nội dung lệnh để thực hiện!', 'warn');
+    }
+    stopVr();
+};
+
+vrBtnSubmit?.addEventListener('click', submitVoiceCommand);
+
+vrTranscriptInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        submitVoiceCommand();
+    } else if (e.key === 'Escape') {
+        e.preventDefault();
+        stopVr();
+    }
+});
+
+vrBtnDelete?.addEventListener('click', () => {
+    stopVr();
+});
 
 function addTextToCanvas(text) {
     const maxWidth = Math.min(500, canvasEl.clientWidth * 0.8);
@@ -4549,4 +4675,300 @@ const btnSidebarFullscreen = document.getElementById('btn-fullscreen-sidebar');
 if (btnSidebarFullscreen) {
     btnSidebarFullscreen.addEventListener('click', toggleFullscreen);
 }
+
+// ============================================================
+//  KB1: KIỂM TRA & BẮT LỖI PHƯƠNG TRÌNH VIẾT TAY (HYBRID ARCHITECTURE)
+// ============================================================
+let currentEqCrop = null;
+let currentEqAnalysis = null;
+let currentRedHighlightMarks = [];
+
+const btnCheckEq = document.getElementById('fab-check-eq');
+const ocrConfirmModal = document.getElementById('ocr-confirm-modal');
+const ocrConfirmInput = document.getElementById('ocr-confirm-input');
+const ocrBtnConfirm = document.getElementById('ocr-btn-confirm');
+const ocrBtnCancel = document.getElementById('ocr-btn-cancel');
+const ocrModalBackdrop = document.getElementById('ocr-modal-backdrop');
+
+const eqErrorCard = document.getElementById('equation-error-card');
+const eqCardRaw = document.getElementById('eq-card-raw');
+const eqCardErrors = document.getElementById('eq-card-errors');
+const eqCardSuggestion = document.getElementById('eq-card-suggestion');
+const eqCardBtnClose = document.getElementById('eq-card-btn-close');
+const eqCardBtnApply = document.getElementById('eq-card-btn-apply');
+
+function clearRedHighlights() {
+    if (currentRedHighlightMarks && currentRedHighlightMarks.length > 0) {
+        currentRedHighlightMarks.forEach(obj => {
+            try { canvas.remove(obj); } catch(e) {}
+        });
+        currentRedHighlightMarks = [];
+        canvas.renderAll();
+    }
+}
+
+function drawRedHighlightsOnCanvas(crop) {
+    clearRedHighlights();
+    if (!crop) return;
+    const scaleX = canvas.width / canvasEl.clientWidth;
+    const scaleY = canvas.height / canvasEl.clientHeight;
+    
+    // Tạo vòng khoanh đỏ xung quanh phần chữ viết tay sai
+    const rect = new fabric.Rect({
+        left: Math.max(0, (crop.x - 6) * scaleX),
+        top: Math.max(0, (crop.y - 6) * scaleY),
+        width: (crop.w + 12) * scaleX,
+        height: (crop.h + 12) * scaleY,
+        fill: 'rgba(239, 68, 68, 0.08)',
+        stroke: '#ef4444',
+        strokeWidth: 3,
+        strokeDashArray: [10, 6],
+        rx: 14,
+        ry: 14,
+        selectable: false,
+        evented: false
+    });
+    canvas.add(rect);
+    currentRedHighlightMarks.push(rect);
+    canvas.renderAll();
+}
+
+function showOcrConfirmModal(text, crop) {
+    currentEqCrop = crop;
+    if (ocrConfirmInput) {
+        ocrConfirmInput.value = text || '';
+    }
+    if (ocrConfirmModal) {
+        ocrConfirmModal.classList.remove('hidden');
+        ocrConfirmInput?.focus();
+    }
+}
+
+function hideOcrConfirmModal() {
+    if (ocrConfirmModal) {
+        ocrConfirmModal.classList.add('hidden');
+    }
+}
+
+function requestEquationCheckOCR(crop) {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/analyze`);
+
+    ws.onopen = () => {
+        setLoading(true, '🔍 AI đang nhận diện phương trình viết tay...');
+        ws.send(JSON.stringify({
+            action: 'check_equation_ocr',
+            image: crop.dataURL,
+            crop: { x: crop.x, y: crop.y, w: crop.w, h: crop.h }
+        }));
+    };
+
+    ws.onmessage = (event) => {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'log') {
+            if (data.message) setLoading(true, data.message);
+            return;
+        }
+        setLoading(false);
+        ws.close();
+
+        if (data.type === 'ocr_confirm') {
+            showOcrConfirmModal(data.transcribed_text, data.crop || crop);
+        } else if (data.type === 'error') {
+            showToast(data.message || 'Lỗi nhận diện phương trình', 'error');
+        }
+    };
+
+    ws.onerror = () => {
+        setLoading(false);
+        showToast('Lỗi kết nối máy chủ.', 'error');
+    };
+
+    ws.onclose = () => setLoading(false);
+}
+
+function evaluateEquationCheck(text, crop) {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/analyze`);
+
+    ws.onopen = () => {
+        setLoading(true, '⚡ Đang kiểm tra cân bằng & hóa trị...');
+        ws.send(JSON.stringify({
+            action: 'check_equation_eval',
+            text: text,
+            crop: crop
+        }));
+    };
+
+    ws.onmessage = (event) => {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'log') {
+            if (data.message) setLoading(true, data.message);
+            return;
+        }
+        setLoading(false);
+        ws.close();
+
+        if (data.type === 'result_equation_check') {
+            displayEquationCheckResult(data.analysis, data.crop || crop);
+        } else if (data.type === 'error') {
+            showToast(data.message || 'Lỗi phân tích phương trình', 'error');
+        }
+    };
+
+    ws.onerror = () => {
+        setLoading(false);
+        showToast('Lỗi kết nối máy chủ.', 'error');
+    };
+
+    ws.onclose = () => setLoading(false);
+}
+
+function displayEquationCheckResult(analysis, crop) {
+    currentEqAnalysis = analysis;
+    currentEqCrop = crop;
+
+    if (!analysis) return;
+
+    // Khoanh đỏ phần chữ viết tay sai nếu có lỗi
+    if (!analysis.is_correct && crop) {
+        drawRedHighlightsOnCanvas(crop);
+    } else {
+        clearRedHighlights();
+    }
+
+    if (eqCardRaw) {
+        eqCardRaw.textContent = analysis.transcribed_text || '';
+    }
+
+    if (eqCardErrors) {
+        eqCardErrors.innerHTML = '';
+        if (analysis.is_correct) {
+            eqErrorCard?.classList.add('is-correct');
+            const okItem = document.createElement('div');
+            okItem.className = 'eq-error-item success-item';
+            okItem.innerHTML = '✅ <b>Phương trình chuẩn xác:</b> Đã cân bằng đúng nguyên tử và phù hợp điều kiện phản ứng.';
+            eqCardErrors.appendChild(okItem);
+        } else {
+            eqErrorCard?.classList.remove('is-correct');
+            (analysis.errors || []).forEach(err => {
+                const item = document.createElement('div');
+                let cls = 'prod-err';
+                if (err.type === 'balance_error') cls = 'balance-err';
+                else if (err.type === 'condition_error') cls = 'cond-err';
+                else if (err.type === 'valence_error') cls = 'val-err';
+                item.className = `eq-error-item ${cls}`;
+                item.textContent = err.message;
+                eqCardErrors.appendChild(item);
+            });
+        }
+    }
+
+    if (eqCardSuggestion) {
+        eqCardSuggestion.textContent = analysis.suggestion || analysis.transcribed_text || '';
+    }
+
+    if (eqErrorCard) {
+        eqErrorCard.classList.remove('hidden');
+    }
+}
+
+// Bắt sự kiện nút [Kiểm tra PTHH]
+btnCheckEq?.addEventListener('click', () => {
+    if (lastLassoCrop) {
+        requestEquationCheckOCR(lastLassoCrop);
+    } else {
+        // Tự động chuyển sang chế độ khoanh vùng và nhắc giáo viên
+        showToast('Hãy dùng bút khoanh vùng phương trình cần kiểm tra!', 'info');
+        const lassoBtn = document.getElementById('fab-lasso');
+        if (lassoBtn) {
+            lassoBtn.click();
+        }
+    }
+});
+
+// Sự kiện Modal Xác nhận OCR
+ocrBtnConfirm?.addEventListener('click', () => {
+    const val = ocrConfirmInput ? ocrConfirmInput.value.trim() : '';
+    if (!val) {
+        showToast('Vui lòng nhập phương trình cần kiểm tra!', 'warn');
+        return;
+    }
+    hideOcrConfirmModal();
+    evaluateEquationCheck(val, currentEqCrop);
+});
+
+ocrBtnCancel?.addEventListener('click', hideOcrConfirmModal);
+ocrModalBackdrop?.addEventListener('click', hideOcrConfirmModal);
+
+// Đóng thẻ lỗi
+eqCardBtnClose?.addEventListener('click', () => {
+    eqErrorCard?.classList.add('hidden');
+    clearRedHighlights();
+});
+
+// ÁP DỤNG SỬA VÀO BẢNG (Fabric.js thay nét viết tay bằng LaTeX/Unicode đúng vị trí cũ)
+eqCardBtnApply?.addEventListener('click', () => {
+    if (!currentEqAnalysis || !currentEqAnalysis.suggestion) {
+        showToast('Chưa có nội dung gợi ý chuẩn!', 'warn');
+        return;
+    }
+
+    const suggestionText = currentEqAnalysis.suggestion;
+    const crop = currentEqCrop;
+
+    if (crop) {
+        // 1. Xóa các nét vẽ tay trong vùng khoanh
+        const objsInCrop = getObjectsInLasso(crop);
+        objsInCrop.forEach(obj => {
+            try { canvas.remove(obj); } catch(e) {}
+        });
+
+        // 2. Xóa các vòng tròn đỏ tạm thời
+        clearRedHighlights();
+
+        // 3. Tạo chữ in đẹp đặt đúng vị trí cũ
+        const scaleX = canvas.width / canvasEl.clientWidth;
+        const scaleY = canvas.height / canvasEl.clientHeight;
+
+        const textObj = new fabric.Text(suggestionText, {
+            left: Math.round(crop.x * scaleX),
+            top: Math.round(crop.y * scaleY),
+            fontSize: 26,
+            fill: '#38bdf8',
+            fontFamily: "'Fira Code', 'Consolas', 'Segoe UI', monospace",
+            fontWeight: 'bold',
+            selectable: true,
+            evented: true
+        });
+
+        canvas.add(textObj);
+        canvas.setActiveObject(textObj);
+        canvas.renderAll();
+        saveState();
+
+        // 4. Đóng thẻ lỗi và dọn dẹp lasso
+        eqErrorCard?.classList.add('hidden');
+        clearLasso();
+        showToast('✨ Đã áp dụng phương trình chuẩn vào bảng thành công!', 'info');
+    } else {
+        // Nếu không có crop cụ thể, chèn vào giữa màn hình
+        const textObj = new fabric.Text(suggestionText, {
+            left: canvas.width / 2 - 150,
+            top: canvas.height / 2 - 20,
+            fontSize: 28,
+            fill: '#38bdf8',
+            fontFamily: "'Fira Code', 'Consolas', monospace",
+            fontWeight: 'bold'
+        });
+        canvas.add(textObj);
+        canvas.renderAll();
+        saveState();
+        eqErrorCard?.classList.add('hidden');
+        showToast('✨ Đã thêm phương trình chuẩn vào bảng!', 'info');
+    }
+});
+
 

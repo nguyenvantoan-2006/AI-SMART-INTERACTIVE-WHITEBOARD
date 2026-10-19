@@ -27,15 +27,20 @@
         </div>
 
         <!-- Voice Recorder Popup -->
+        <!-- Voice Recorder Popup (Chỉ thực hiện khi bấm Gửi) -->
         <div id="voice-recorder-popup" class="voice-recorder-popup hidden">
-            <div class="vr-action-btn" id="vr-btn-delete" title="Xóa"><i class="fas fa-trash"></i></div>
+            <button class="vr-action-btn" id="vr-btn-delete" title="Hủy bỏ (Esc)"><i class="fas fa-times"></i></button>
+            <button class="vr-action-btn vr-mic-btn" id="vr-btn-mic" title="Bật/Tắt thu âm giọng nói"><i class="fas fa-microphone"></i></button>
             <div class="vr-center">
-                <div class="vr-waves">
+                <div class="vr-waves" id="vr-waves">
                     <div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div>
                 </div>
+                <input type="text" id="vr-transcript-input" class="vr-transcript-input" placeholder="Đang lắng nghe...">
                 <span id="vr-time" class="vr-time">00:00</span>
             </div>
-            <div class="vr-action-btn primary" id="vr-btn-send" title="Chèn chữ"><i class="fas fa-paper-plane"></i></div>
+            <button class="vr-btn-submit" id="vr-btn-submit" title="Gửi thực hiện lệnh (Enter)">
+                <i class="fas fa-paper-plane"></i> Gửi thực hiện
+            </button>
         </div>
 
         <audio id="tts-player" style="display:none"></audio>
@@ -97,8 +102,7 @@
 
             <!-- Cụm 5: Giọng nói -->
             <div class="sidebar-section">
-                <button class="tool-btn" id="btn-mic" data-i18n-title="mic" title="Giọng nói"><i class="fas fa-microphone"></i></button>
-                <button class="tool-btn" id="fab-tts" data-i18n-title="tts" title="Đọc văn bản"><i class="fas fa-headphones"></i></button>
+                <button class="tool-btn" id="btn-mic" data-i18n-title="mic" title="Giọng nói (bấm để nói lệnh)"><i class="fas fa-microphone"></i></button>
             </div>
 
             <div class="sidebar-divider"></div>
@@ -252,6 +256,54 @@
         </label>
     </div>
 
+    <!-- KB1: OCR Confirmation Modal (Xác nhận chữ viết tay trước khi chấm lỗi) -->
+    <div id="ocr-confirm-modal" class="chem-modal hidden">
+        <div class="chem-modal-backdrop" id="ocr-modal-backdrop"></div>
+        <div class="chem-modal-box">
+            <div class="chem-modal-header">
+                <span class="chem-modal-icon">🔍</span>
+                <span class="chem-modal-title">Xác nhận phương trình viết tay</span>
+            </div>
+            <div class="chem-modal-body">
+                <p class="chem-modal-desc">AI đọc được phương trình sau từ bảng viết tay:</p>
+                <div class="chem-ocr-input-wrap">
+                    <input type="text" id="ocr-confirm-input" class="chem-ocr-input" placeholder="Ví dụ: Fe + HCl -> FeCl3 + H2">
+                </div>
+                <p class="chem-modal-subdesc">Bạn có thể sửa lại nếu nhận diện chưa đúng trước khi chấm lỗi.</p>
+            </div>
+            <div class="chem-modal-footer">
+                <button id="ocr-btn-cancel" class="chem-btn chem-btn-secondary">Hủy</button>
+                <button id="ocr-btn-confirm" class="chem-btn chem-btn-primary"><i class="fas fa-check"></i> Đúng, kiểm tra lỗi</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- KB1: Equation Error Card (Thẻ bắt lỗi sư phạm & Gợi ý sửa) -->
+    <div id="equation-error-card" class="equation-error-card hidden">
+        <div class="eq-card-header">
+            <div class="eq-card-title-wrap">
+                <span class="eq-card-badge">KB1</span>
+                <span class="eq-card-title">Phân tích Phương trình Hóa học</span>
+            </div>
+            <button id="eq-card-btn-close" class="eq-card-close" title="Đóng">&times;</button>
+        </div>
+        <div class="eq-card-body">
+            <div class="eq-card-raw" id="eq-card-raw"></div>
+            <div class="eq-card-errors" id="eq-card-errors">
+                <!-- Danh sách lỗi: 🔴 Sai sản phẩm, 🟡 Chưa cân bằng... -->
+            </div>
+            <div class="eq-card-suggestion-box">
+                <div class="eq-sugg-label">🟢 Gợi ý chuẩn:</div>
+                <div class="eq-sugg-text" id="eq-card-suggestion"></div>
+            </div>
+        </div>
+        <div class="eq-card-footer">
+            <button id="eq-card-btn-apply" class="chem-btn chem-btn-success">
+                <i class="fas fa-magic"></i> Áp dụng sửa vào bảng
+            </button>
+        </div>
+    </div>
+
     <!-- Libraries -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
@@ -259,7 +311,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/function-plot/1.23.0/function-plot.js"></script>
     <script src="chem_visuals.js?v=35"></script>
-    <script src="script.js?v=20261019_notts"></script>
+    <script src="script.js?v=20261020_micv2"></script>
     <script src="virtual_lab.js?v=7"></script>
     <script src="exercise_lib.js?v=4"></script>
     <!-- Page Manager: multi-page + OCR dedup + i18n (loads AFTER script.js) -->

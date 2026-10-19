@@ -12,6 +12,7 @@ load_dotenv()
 import base64
 import json
 import asyncio
+import re
 from io import BytesIO
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -19,8 +20,19 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
 from PIL import Image
+from chem_checker import check_equation_pedagogy
 
 app = FastAPI(title="AI Smart Whiteboard Multi-Agent API")
+
+@app.middleware("http")
+async def add_no_cache_header(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.endswith((".html", ".js", ".css")) or path == "/":
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 app.add_middleware(
     CORSMiddleware,
@@ -85,16 +97,13 @@ def _get_model(model_name_: str, system_instruction: str):
         )
     return _model_cache[cache_key]
 
-DEFAULT_MODEL = "gemini-3.5-flash-lite"   # ~2s/phản ứng (đo 2026-10); bản flash thường hay 503 + chờ ~40s
-# Chỉ giữ model nhanh; gemini-3.5-flash có "thinking" nên hay vượt 30s → không dùng làm dự phòng
-FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite"]
+DEFAULT_MODEL = "gemini-3.5-flash-lite"   # ~1-2s response time
+FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"]
 
-# SPEED OPT: "Chạy đua" các model — Google đôi khi treo 1 model hàng chục giây (đặc biệt với ảnh).
-# Gọi model chính trước; sau LLM_HEDGE_DELAY giây chưa xong thì gọi thêm model dự phòng SONG SONG,
-# model nào trả lời hợp lệ trước thì dùng, các lời gọi còn lại bị hủy.
-LLM_HEDGE_DELAY       = 4.0               # giây — chờ bao lâu thì gọi thêm model dự phòng
-LLM_TOTAL_TIMEOUT     = 35.0              # giây — tối đa cho cả lượt gọi
-LLM_COOLDOWN_SECONDS  = 120.0             # model vừa lỗi/chậm → xếp xuống cuối trong 2 phút
+# SPEED OPT: Giảm hedge delay để backup model nhảy vào ngay sau 3s nếu model chính chậm
+LLM_HEDGE_DELAY       = 3.0               # giây — chờ bao lâu thì gọi thêm model dự phòng
+LLM_TOTAL_TIMEOUT     = 18.0              # giây — tối đa cho cả lượt gọi
+LLM_COOLDOWN_SECONDS  = 60.0              # model vừa lỗi/chậm → xếp xuống cuối trong 1 phút
 _model_cooldown_until: dict = {}          # { model_name: timestamp hết cooldown }
 
 
@@ -193,9 +202,11 @@ def _quiz_plan(n: int, q_type: str, level: str) -> list:
     return list(zip(types, levels))
 
 def _quiz_chunks(plan: list) -> list:
-    """Chia đề thành các phần ~3 câu (tối đa 5 phần) để gọi AI song song."""
+    """Chia đề: Với <= 6 câu, tạo 1 lượt duy nhất (siêu nhanh ~2s, không bị nghẽn API song song)."""
     n = len(plan)
-    m = min(5, -(-n // 3))                      # số phần; chia đều (vd 4 câu → 2 + 2)
+    if n <= 6:
+        return [{"plan": plan, "focus": "toàn bộ nội dung trọng tâm trong phần khoanh vùng"}]
+    m = min(3, -(-n // 4))                      # số phần (tối đa 3 phần cho đề nhiều câu)
     bounds = [round(n * j / m) for j in range(m + 1)]
     chunks, easy_i, hard_i = [], 0, 0
     for j in range(m):
@@ -342,10 +353,10 @@ _SAFETY_DB = {
     frozenset({"H2SO4", "NA"}):     ("danger",  "Na kim loại + H₂SO₄ phản ứng mãnh liệt, có thể bắn axit ra ngoài."),
     frozenset({"HNO3", "NA"}):      ("danger",  "Na kim loại + HNO₃ đặc phản ứng bùng phát, nguy hiểm cao."),
 
-    # ── ĐỘC HẠI (level: toxic) — tạo khí độc ────────────────
-    frozenset({"NAOCL", "HCL"}):   ("toxic",   "Thuốc tẩy (NaOCl) + HCl tạo khí Cl₂ — độc, không được trộn."),
+    # ── ĐỘC HẠI & NGUY HIỂM TAI NẠN (level: danger / toxic) ────────────────
+    frozenset({"NAOCL", "NH3"}):   ("danger",  "Thuốc tẩy (NaOCl) + amoniac tạo khí cloramin (NH₂Cl, NCl₃) kịch độc, gây tổn thương phổi cấp và nguy cơ nổ."),
+    frozenset({"NAOCL", "HCL"}):   ("toxic",   "Thuốc tẩy (NaOCl) + HCl tạo khí Cl₂ — độc hại, không được trộn."),
     frozenset({"NAOCL", "H2SO4"}): ("toxic",   "Thuốc tẩy + H₂SO₄ tạo HClO và Cl₂ — khí cực độc."),
-    frozenset({"NAOCL", "NH3"}):   ("toxic",   "Thuốc tẩy + amoniac tạo khí cloramin — rất độc cho phổi."),
     frozenset({"PB", "H2SO4"}):    ("toxic",   "Pb + H₂SO₄ tạo PbSO₄ và PbO — hợp chất chì rất độc."),
     frozenset({"AS2O3", "H2SO4"}): ("toxic",   "Asen trioxide + H₂SO₄ tạo hơi As — cực độc, gây ung thư."),
     frozenset({"H2S", "O2"}):      ("toxic",   "H₂S là khí rất độc. Thực hiện trong tủ hút có hệ thống thoát khí."),
@@ -576,16 +587,24 @@ def _normalize_formula(formula: str) -> str:
     if not formula:
         return ""
     import re
-    cleaned = (formula
-        .upper()
-        .replace(" ", "")
-        .replace("↓", "").replace("↑", "")
-        .replace("(AQ)", "").replace("(S)", "").replace("(L)", "").replace("(G)", "")
-        .replace("(ĐẶC)", "").replace("(LOÃNG)", "")
-    )
+    cleaned = formula.upper().strip()
+    # Loại bỏ các ghi chú trạng thái và nồng độ phổ biến (cả có ngoặc và không ngoặc)
+    remove_patterns = [
+        r'\(AQ\)', r'\(S\)', r'\(L\)', r'\(G\)',
+        r'\(ĐẶC\)', r'\(LOÃNG\)', r'ĐẶC', r'LOÃNG',
+        r'DUNG\s*DỊCH', r'DD', r'CONC', r'DIL',
+        r'↓', r'↑', r'\s+'
+    ]
+    for pat in remove_patterns:
+        cleaned = re.sub(pat, '', cleaned)
+    
+    # Loại bỏ điện tích ion nếu có ở cuối (ví dụ H3O+ -> H3O, HSO4- -> HSO4, SO4^2- -> SO4)
+    cleaned = re.sub(r'[\+\-\^]+[0-9]*$', '', cleaned)
+    
     # Loại bỏ hệ số đầu nếu còn sót (ví dụ "2H2O" -> "H2O")
     m = re.match(r'^\d*(.*)$', cleaned)
     return m.group(1) if m else cleaned
+
 
 
 # Bảng khối lượng mol nguyên tử chuẩn SGK THPT (g/mol)
@@ -764,32 +783,65 @@ def _calculate_mol_products(reactants: list, products: list, mol_input: dict, eq
 
     return result
 
-def check_safety(reactants: list, products: list) -> dict:
+def check_safety(reactants: list, products: list, equation: str = "") -> dict:
     """
-    Lớp 1: Kiểm tra an toàn bằng Safety DB hardcoded.
-    Trả về dict: {level, reason, pair, is_critical} hoặc {level: "safe"}
+    Kiểm tra an toàn kết hợp:
+    - Lớp Luật Hành Động (Action Rules Layer): Nhận diện cụm thao tác nguy hiểm (vd 'đổ nước vào axit đặc', thứ tự H2O + H2SO4).
+    - Lớp Cặp chất (Safety DB hardcoded): Cặp chất nguy hiểm/độc hại.
     """
-    norms = [_normalize_formula(m) for m in reactants + products]
+    norm_reactants = [_normalize_formula(m) for m in reactants]
+    norm_products = [_normalize_formula(m) for m in products]
 
-    # Kiểm tra tất cả cặp (reactants × reactants + reactants × products)
-    all_mols = [_normalize_formula(m) for m in reactants]
-    for i in range(len(all_mols)):
-        for j in range(i + 1, len(all_mols)):
-            pair = frozenset({all_mols[i], all_mols[j]})
+    # Quét toàn bộ nội dung xuất hiện (cả trong equation và danh sách chất)
+    eq_clean = (equation or "").upper().replace(" ", "")
+    all_context = " ".join(norm_reactants + norm_products) + " " + eq_clean
+
+    # ══════════════════════════════════════════════════════════════════
+    #  LỚP 1A: LUẬT HÀNH ĐỘNG (ACTION RULES LAYER) — Thao tác nguy hiểm
+    # ══════════════════════════════════════════════════════════════════
+    # 1. Rót nước vào axit đặc (H2SO4 + H2O hoặc H3O+ / HSO4- hoặc axit sunfuric)
+    has_h2so4 = ("H2SO4" in all_context) or any("H2SO4" in r for r in norm_reactants) or ("AXIT SUNFURIC" in (equation or "").upper())
+    has_h2o = ("H2O" in all_context) or ("H3O" in all_context) or any("H2O" in r for r in norm_reactants) or ("NƯỚC" in (equation or "").upper()) or ("NUOC" in (equation or "").upper())
+    if has_h2so4 and has_h2o:
+        return {
+            "level": "danger",
+            "reason": "CẢNH BÁO NGUY HIỂM: Tuyệt đối KHÔNG ĐƯỢC RÓT NƯỚC VÀO AXIT H₂SO₄ ĐẶC! Nước nhẹ hơn axit nên nổi lên trên; nhiệt hiđrat hóa tỏa ra cực lớn làm nước sôi đột ngột và bắn tung tóe axit đặc ra ngoài gây bỏng axit nặng và mù mắt.",
+            "pair": "H2O + H2SO4",
+            "is_critical": True,
+            "critical_safe_alt": "QUY TẮC VÀNG SGK HÓA 11: Rót từ từ axit H₂SO₄ đặc dọc theo đũa thủy tinh vào cốc nước lớn và khuấy nhẹ. TUYỆT ĐỐI KHÔNG ĐƯỢC LÀM NGƯỢC LẠI!"
+        }
+
+    # 2. Kim loại kiềm (Na, K, Li) và nước
+    has_alkali = any(r in {"NA", "K", "LI", "RB", "CS"} for r in norm_reactants) or bool(re.search(r'\b(NA|K|LI)\b', eq_clean))
+    if has_alkali and has_h2o:
+        return {
+            "level": "danger",
+            "reason": "CẢNH BÁO NGUY HIỂM: Kim loại kiềm (Na, K, Li) phản ứng bạo liệt với nước, tỏa nhiệt cực lớn và sinh khí H₂ dễ phát nổ.",
+            "pair": "Kim loại kiềm + H2O",
+            "is_critical": True,
+            "critical_safe_alt": "Chỉ dùng mẩu kim loại kiềm nhỏ bằng hạt gạo, dùng panh gắp (không dùng tay), thí nghiệm phải có kính chắn bảo hộ."
+        }
+
+    # ══════════════════════════════════════════════════════════════════
+    #  LỚP 1B: CẶP CHẤT NGUY HIỂM (SAFETY DB)
+    # ══════════════════════════════════════════════════════════════════
+    for i in range(len(norm_reactants)):
+        for j in range(i + 1, len(norm_reactants)):
+            pair = frozenset({norm_reactants[i], norm_reactants[j]})
             if pair in _SAFETY_DB:
                 level, reason = _SAFETY_DB[pair]
                 safe_alt = CRITICAL_SAFE_ALTERNATIVES.get(pair, None)
                 return {
                     "level": level, 
                     "reason": reason, 
-                    "pair": f"{all_mols[i]} + {all_mols[j]}",
+                    "pair": f"{norm_reactants[i]} + {norm_reactants[j]}",
                     "is_critical": (level == "danger"),
                     "critical_safe_alt": safe_alt
                 }
 
     # Kiểm tra sản phẩm độc hại
     toxic_products = {"CL2", "HCN", "H2S", "NO2", "SO2", "NH3", "HOCL", "NCL3", "MN2O7"}
-    for p in [_normalize_formula(m) for m in products]:
+    for p in norm_products:
         if p in toxic_products:
             return {
                 "level": "toxic",
@@ -799,7 +851,13 @@ def check_safety(reactants: list, products: list) -> dict:
                 "critical_safe_alt": None
             }
 
-    return {"level": "safe", "reason": "Phản ứng an toàn trong điều kiện phòng thí nghiệm thông thường.", "is_critical": False, "critical_safe_alt": None}
+    return {
+        "level": "safe", 
+        "reason": "Phản ứng an toàn trong điều kiện phòng thí nghiệm thông thường.", 
+        "is_critical": False, 
+        "critical_safe_alt": None
+    }
+
 
 # ============================================================
 #  OLFACTORY & CHEMICAL SOUND DATABASE (ĐA GIÁC QUAN)
@@ -819,7 +877,9 @@ OLFACTORY_DB = {
 }
 
 CRITICAL_SAFE_ALTERNATIVES = {
-    frozenset({"H2SO4", "KMNO4"}): "Thay vì phản ứng tự nổ nguy hiểm này, minh họa tính oxi hóa mạnh của KMnO₄ trong môi trường axit loãng bằng phản ứng FeSO₄ + KMnO₄ + H₂SO₄ loãng (dung dịch mất màu tím, chuyển vàng nhạt an toàn).",
+    frozenset({"H2SO4", "KMNO4"}): "Thay vì phản ứng tạo Mn₂O₇ nổ tự phát nguy hiểm, minh họa tính oxi hóa mạnh của KMnO₄ theo chuẩn SGK: 10FeSO₄ + 2KMnO₄ + 8H₂SO₄(loãng) → 5Fe₂(SO₄)₃ + K₂SO₄ + 2MnSO₄ + 8H₂O (dung dịch mất màu tím, chuyển màu vàng nhạt an toàn).",
+    frozenset({"H2SO4", "H2O"}): "QUY TẮC VÀNG SGK HÓA 11: Rót từ từ axit H₂SO₄ đặc dọc theo đũa thủy tinh vào cốc nước lớn và khuấy nhẹ. TUYỆT ĐỐI KHÔNG ĐƯỢC LÀM NGƯỢC LẠI!",
+    frozenset({"NAOCL", "NH3"}): "Tuyệt đối không pha trộn dung dịch tẩy rửa gia dụng sinh khí cloramin kịch độc. Minh họa tính bazơ của NH₃ an toàn bằng quỳ tím ẩm (hóa xanh) hoặc thí nghiệm tạo khói trắng NH₄Cl với HCl đặc trong tủ hút.",
     frozenset({"NA", "H2O"}): "Minh họa kim loại tác dụng với nước an toàn bằng mẩu Canxi (Ca) nhỏ trong cốc nước lớn, hoặc dùng mẩu Na bé bằng hạt gạo có kính bảo vệ che chắn.",
     frozenset({"K", "H2O"}): "Thay bằng phản ứng Canxi (Ca) với nước hoặc quan sát thí nghiệm Kali qua video mô phỏng.",
     frozenset({"KMNO4", "HCL"}): "Thay vì điều chế Clo bằng HCl đặc sinh khí kịch độc, hãy điều chế lượng nhỏ trong tủ hút kín hoặc quan sát qua mô phỏng 3D.",
@@ -1261,7 +1321,8 @@ Output strictly valid JSON (no markdown, no backticks):
 
                 # === LAYER 1: Hardcoded Safety DB — không cần AI, không thể bypass ===
                 await send_log("SafetyAgent", "Kiểm tra an toàn hóa chất...")
-                safety = check_safety(reactants, products)
+                eq_for_safety = res.get("equation", "") or req.get("text", "") or ""
+                safety = check_safety(reactants, products, equation=eq_for_safety)
                 level  = safety.get("level", "safe")
                 print(f"[SAFETY] Level={level} | Pair={safety.get('pair','N/A')} | {safety.get('reason','')}")
 
@@ -1311,12 +1372,12 @@ Output strictly valid JSON (no markdown, no backticks):
                         "pair":                safety.get("pair", ""),
                         "is_critical":         safety.get("is_critical", False),
                         "critical_safe_alt":   safety.get("critical_safe_alt", None) or pedagogy.get("safe_alternative", None),
-                        "summary":             pedagogy.get("safety_summary", safety.get("reason", "")),
+                        "summary":             safety.get("reason", "") if level == "danger" else pedagogy.get("safety_summary", safety.get("reason", "")),
                         "mechanism":           pedagogy.get("mechanism",           ""),
                         "reaction_type_label": pedagogy.get("reaction_type_label", ""),
                         "simulation":          pedagogy.get("simulation",          ""),
                         "warnings":            pedagogy.get("warnings",            []),
-                        "safe_alternative":    pedagogy.get("safe_alternative",    None) or safety.get("critical_safe_alt", None),
+                        "safe_alternative":    safety.get("critical_safe_alt", None) or pedagogy.get("safe_alternative", None),
                         "theory":              pedagogy.get("theory",              ""),
                         "applications":        pedagogy.get("applications",        ""),
                         "student_note":        pedagogy.get("student_note",        ""),
@@ -1408,7 +1469,7 @@ Output strictly valid JSON (no markdown, no backticks):
                 ]
                 n = len(chunk["plan"])
                 try:
-                    res = await call_llm(prompt, sys_instr, hedge_delay=10.0, total_timeout=25.0 + n * 4.0)
+                    res = await call_llm(prompt, sys_instr, hedge_delay=3.0, total_timeout=14.0)
                 except Exception as e:
                     print(f"[QUIZ] Phần {i + 1} lỗi: {e}")
                     return {}
@@ -1436,12 +1497,69 @@ Output strictly valid JSON (no markdown, no backticks):
                 await send_log("QuizAgent", f"✅ Đã tạo {len(questions)} câu về: {topic}")
                 await websocket.send_json({"type": "result_quiz", "topic": topic or "Hóa học", "questions": questions})
 
+        elif action == "check_equation_ocr":
+            # KB1: Nhận diện OCR chữ viết tay phương trình hóa học từ phần khoanh vùng
+            await send_log("EquationChecker", "🔍 Đang nhận diện phương trình hóa học viết tay...")
+            if not img:
+                await websocket.send_json({"type": "error", "message": "Chưa có ảnh phần khoanh vùng. Vui lòng khoanh vùng phương trình trước!"})
+                return
+            
+            ocr_sys = """You are an expert chemical OCR AI. Read the handwritten chemical reaction in the image.
+Extract the exact equation as written by the teacher or student (do not fix mistakes yet).
+Examples:
+- Fe + HCl -> FeCl3 + H2
+- NaSO4 + BaCl2 -> BaSO4 + NaCl
+- KClO3 -> KCl + O2
+Format: Return strictly JSON: {"equation": "<transcribed_equation>"} (no markdown, no backticks)."""
+            img_buffer = BytesIO()
+            SuperAgent().preprocess_image(img).save(img_buffer, format="JPEG", quality=92)
+            img_part = {"mime_type": "image/jpeg", "data": img_buffer.getvalue()}
+            prompt = ["Transcribe the handwritten chemical equation in this whiteboard crop exactly as written:", img_part]
+            
+            try:
+                res = await call_llm(prompt, ocr_sys, hedge_delay=1.5, total_timeout=8.0)
+                eq_text = res.get("equation", "").strip() if isinstance(res, dict) else ""
+            except Exception as e:
+                print(f"[OCR EQ ERROR]: {e}")
+                eq_text = ""
+                
+            if not eq_text:
+                await websocket.send_json({"type": "error", "message": "Không nhận diện được phương trình hóa học. Vui lòng viết lại rõ ràng hơn!"})
+            else:
+                await send_log("EquationChecker", f"AI đọc được: {eq_text}")
+                await websocket.send_json({
+                    "type": "ocr_confirm",
+                    "transcribed_text": eq_text,
+                    "crop": req.get("crop", None)
+                })
+
+        elif action == "check_equation_eval":
+            # KB1: Phân tích bắt lỗi sư phạm + cân bằng nguyên tử thuần Python không phụ thuộc LLM (<0.05s)
+            eq_text = req.get("text", "").strip()
+            await send_log("EquationChecker", f"⚡ Đang phân tích phương trình: {eq_text}...")
+            analysis = check_equation_pedagogy(eq_text)
+            await websocket.send_json({
+                "type": "result_equation_check",
+                "analysis": analysis,
+                "crop": req.get("crop", None)
+            })
+
     except WebSocketDisconnect:
         print("Client disconnected")
     except Exception as e:
         await send_log("System", f"Error: {str(e)}")
         print(f"Error during WS: {e}")
         await websocket.close()
+
+
+@app.post("/api/chem/check_equation")
+async def api_check_equation(payload: dict):
+    """API kiểm tra và bắt lỗi phương trình hóa học (thuần Python Gaussian + Whitelist)."""
+    text = payload.get("text", "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Thiếu text phương trình")
+    return check_equation_pedagogy(text)
+
 
 # ============================================================
 #  KHO BÀI TẬP — giáo viên tải file đề (Word / PDF / ảnh) lên server
