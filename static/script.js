@@ -1532,13 +1532,14 @@ function handleVoiceAgentResult(res) {
         } else {
             buildGeneralWidget({
                 title: res.title || '🧠 Phân Tích & Giải Thích',
-                explanation: res.explanation || res.reply || "Tôi không có câu trả lời."
+                explanation: res.explanation || res.reply || "Tôi không có câu trả lời.",
+                speech_script: res.speech_script || ''
             });
         }
     }
     
     if (res.reply) {
-        playTTS(res.reply);
+        playTTS(res.speech_script || res.reply);
     }
 }
 
@@ -1548,7 +1549,7 @@ function playTTS(text) {
         window._currentTTSAudio.pause();
     }
     
-    const url = `/api/tts?text=${encodeURIComponent(text)}`;
+    const url = `/api/tts?text=${encodeURIComponent(text)}&smart=true`;
     const audioEl = document.getElementById('tts-player');
     
     audioEl.onended = null;
@@ -3359,10 +3360,11 @@ function buildGeneralWidget(data) {
 
     const title = data.title || '🧠 Phân Tích & Giải Thích';
     const text = data.explanation || data.content || data.reply || 'Không phân tích được. Hãy viết rõ hơn.';
+    let speechScript = data.speech_script || '';
     const wid = 'w' + Date.now();
     
     const cWidth = canvasSection.clientWidth || 900;
-    const W = Math.min(520, cWidth - 40);
+    const W = Math.min(560, cWidth - 40);
     const posX = Math.max(30, Math.round((cWidth - W) / 2));
     const posY = 70;
 
@@ -3380,25 +3382,78 @@ function buildGeneralWidget(data) {
     widget.innerHTML = `
         <div class="widget-header">
             <span class="widget-title">${escHtml(title)}</span>
-            <div class="widget-actions" style="display:flex;align-items:center;gap:8px;">
-                <button class="concept-head-btn" id="gw-tts-${wid}" title="Nghe đọc nội dung">
-                    <span>🔊</span><span>Nghe</span>
+            <div class="widget-actions" style="display:flex;align-items:center;gap:6px;">
+                <button class="concept-head-btn" id="gw-toggle-script-${wid}" title="Xem lời giảng sư phạm">
+                    <span>🎓</span><span id="gw-toggle-text-${wid}">Lời giảng</span>
+                </button>
+                <button class="concept-head-btn" id="gw-tts-${wid}" title="Nghe đọc lời giảng">
+                    <span>🔊</span><span>Nghe giảng</span>
                 </button>
                 <button class="widget-close" onclick="this.closest('.smart-widget').remove()">✕</button>
             </div>
         </div>
         <div class="widget-body">
-            <div class="general-body" style="padding: 16px 20px; font-size: 0.95rem; line-height: 1.7; color: #f1f5f9;">
+            <!-- 1. Tóm tắt các bước tính toán -->
+            <div id="gw-summary-${wid}" class="general-body" style="padding: 16px 20px; font-size: 0.95rem; line-height: 1.7; color: #f1f5f9;">
                 ${formattedHtml}
+            </div>
+
+            <!-- 2. Kịch bản lời giảng sư phạm từng câu -->
+            <div id="gw-script-${wid}" class="general-body" style="display:none; padding: 16px 20px; font-size: 0.95rem; line-height: 1.8; color: #6ee7b7; background: rgba(16, 185, 129, 0.05); max-height: 380px; overflow-y: auto;">
+                <div style="font-weight:600; color:#34d399; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
+                    <span>🎙️</span><span>Kịch bản lời giảng giáo viên (chuẩn SGK 2018):</span>
+                </div>
+                <div id="gw-script-content-${wid}" style="color: #e2e8f0;">
+                    ${speechScript ? speechScript.split('\n').filter(s => s.trim()).map(s => `<div style="margin-bottom:8px; padding-left:12px; border-left:2px solid #10b981;">${escHtml(s)}</div>`).join('') : '<span style="color:#94a3b8;">Đang sẵn sàng kịch bản...</span>'}
+                </div>
             </div>
         </div>
     `;
     canvasSection.appendChild(widget);
     makeWidgetDraggable(widget);
 
-    document.getElementById(`gw-tts-${wid}`)?.addEventListener('click', () => {
-        playTTS(text);
-        showToast('Đang phát giọng đọc...', 'info');
+    let isScriptView = false;
+    const summaryEl = document.getElementById(`gw-summary-${wid}`);
+    const scriptEl = document.getElementById(`gw-script-${wid}`);
+    const toggleBtn = document.getElementById(`gw-toggle-script-${wid}`);
+    const toggleText = document.getElementById(`gw-toggle-text-${wid}`);
+    const scriptContent = document.getElementById(`gw-script-content-${wid}`);
+
+    async function ensureScript() {
+        if (!speechScript) {
+            scriptContent.innerHTML = '<span style="color:#38bdf8;">⏳ Đang tạo lời giảng giáo viên từ AI...</span>';
+            try {
+                const res = await fetch(`/api/tts/script?text=${encodeURIComponent(text)}`);
+                const json = await res.json();
+                if (json && json.script) {
+                    speechScript = json.script;
+                    const lines = json.lines || speechScript.split('\n').filter(s => s.trim());
+                    scriptContent.innerHTML = lines.map(s => `<div style="margin-bottom:8px; padding-left:12px; border-left:2px solid #10b981;">${escHtml(s)}</div>`).join('');
+                }
+            } catch (err) {
+                scriptContent.innerHTML = '<span style="color:#f87171;">Không tải được lời giảng.</span>';
+            }
+        }
+    }
+
+    toggleBtn?.addEventListener('click', async () => {
+        isScriptView = !isScriptView;
+        if (isScriptView) {
+            summaryEl.style.display = 'none';
+            scriptEl.style.display = 'block';
+            toggleText.textContent = 'Tóm tắt';
+            await ensureScript();
+        } else {
+            summaryEl.style.display = 'block';
+            scriptEl.style.display = 'none';
+            toggleText.textContent = 'Lời giảng';
+        }
+    });
+
+    document.getElementById(`gw-tts-${wid}`)?.addEventListener('click', async () => {
+        showToast('Đang phát giọng giáo viên giảng bài...', 'info');
+        await ensureScript();
+        playTTS(speechScript || text);
     });
 }
 

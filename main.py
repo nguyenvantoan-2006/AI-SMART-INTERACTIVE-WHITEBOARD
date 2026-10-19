@@ -1263,6 +1263,15 @@ Output strictly valid JSON (no markdown, no backticks):
             text = req.get("text", "")
             agent = VoiceAssistantAgent()
             res = await agent.process(text, img, send_log)
+            if isinstance(res, dict) and res.get("explanation"):
+                try:
+                    from chem_tts_module import generate_speech_script
+                    await send_log("VoiceAgent", "🎙️ Đang tạo lời giảng sư phạm...")
+                    speech_script = await generate_speech_script(res["explanation"])
+                    if speech_script:
+                        res["speech_script"] = speech_script
+                except Exception as _e:
+                    print(f"[VoiceAgent] Tạo speech_script lỗi: {_e}")
             await websocket.send_json({"type": "result_voice_agent", "data": res})
 
         elif action == "text_chemistry":
@@ -1444,6 +1453,17 @@ async def delete_exercise(name: str):
     os.remove(path)
     return {"ok": True}
 
+
+# =====================================================
+# TTS — Giọng đọc hóa học (edge-tts Neural Voice)
+# Đăng ký routes: /api/tts | /api/tts/stream | /api/tts/preview
+# =====================================================
+try:
+    from chem_tts_module import register_tts_routes
+    register_tts_routes(app)
+except ImportError as _tts_err:
+    print(f"[TTS] Bỏ qua module TTS: {_tts_err}")
+    print("[TTS] Để bật: pip install edge-tts  rồi restart server")
 
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
