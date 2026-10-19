@@ -2005,6 +2005,7 @@ canvas, #whiteboard-canvas, .canvas-container, .upper-canvas, .lower-canvas {
 
 /* Nav */
 .quiz-nav { width: 100%; display: flex; justify-content: flex-end; gap: 10px; }
+.quiz-btn.hidden { display: none; }
 
 /* ---- RESULT SCREEN ---- */
 .quiz-result-score { display: flex; flex-direction: column; align-items: center; gap: 12px; }
@@ -4120,4 +4121,204 @@ img.exlib-page { height: auto; }
 
 /* Ảnh đề đang được kéo sang trang khác */
 .clip-drag-ghost { position: fixed; z-index: 3000; pointer-events: none; opacity: 0.85; outline: 2px dashed #f59e0b; border-radius: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
-.clip-drag-ghost.hidden { display: none; }
+/* ============================================
+   MÁY TÍNH KHOA HỌC (calculator.js) — mô phỏng fx-580VN X
+============================================ */
+.calc580 {
+    position: fixed; z-index: 1800; width: 318px; user-select: none; touch-action: none;
+    background: linear-gradient(175deg, #2a3140 0%, #161b25 45%, #0d1018 100%);
+    border-radius: 24px 24px 40px 40px; padding: 12px 14px 20px;
+    box-shadow: 0 18px 50px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -3px 0 rgba(0,0,0,0.6);
+    border: 1px solid #3a4252; cursor: grab; outline: none;
+    font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+}
+.calc580.hidden { display: none; }
+.calc580.calc-dragging { cursor: grabbing; }
+.calc-top { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.calc-brand { display: flex; flex-direction: column; line-height: 1.1; }
+.calc-model { color: #e2e6ec; font-size: 0.82rem; font-weight: 800; letter-spacing: 0.03em; font-style: italic; }
+.calc-series { color: #8b95a7; font-size: 0.5rem; font-weight: 700; letter-spacing: 0.12em; }
+.calc-solar { flex: 1; height: 18px; border-radius: 3px; background: repeating-linear-gradient(90deg, #3b2b22 0 14px, #2a1f19 14px 15px); box-shadow: inset 0 0 0 1px #000; }
+.calc-close { width: 22px; height: 22px; border-radius: 50%; border: none; background: #3a3f47; color: #cbd5e1; font-size: 0.7rem; cursor: pointer; }
+.calc-close:hover { background: #ef4444; color: #fff; }
+
+/* Màn hình LCD */
+.calc-lcd {
+    background: linear-gradient(180deg, #cdd6c6, #b9c4b1); border-radius: 6px; padding: 3px 8px 6px;
+    box-shadow: inset 0 2px 6px rgba(0,0,0,0.45), 0 0 0 5px #0a0c10, 0 0 0 7px #2c3442; margin: 4px 4px 14px; height: 112px;
+    color: #111; font-family: 'Segoe UI', 'Cambria Math', Arial, sans-serif; overflow: hidden;
+}
+.calc-ind { display: flex; gap: 5px; font-size: 0.56rem; height: 12px; line-height: 12px; }
+.calc-ind b { font-weight: 800; color: #111; }
+.calc-ind b.off { color: transparent; }
+.calc-ind .sp { flex: 1; }
+.calc-screen { height: 96px; display: flex; flex-direction: column; justify-content: space-between; font-size: 0.95rem; }
+.cx-expr { white-space: nowrap; overflow-x: auto; overflow-y: hidden; min-height: 34px; padding-top: 2px; scrollbar-width: none; display: flex; align-items: center; }
+.cx-expr::-webkit-scrollbar { display: none; }
+.cx-res { text-align: right; font-size: 1.45rem; font-weight: 600; white-space: nowrap; overflow: hidden; min-height: 40px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.cx-res small { font-size: 0.55em; }
+.cx-res.cx-err { flex-direction: column; align-items: center; justify-content: center; font-size: 1rem; }
+.cx-errt { font-weight: 800; }
+.cx-errh { font-size: 0.65rem; text-align: center; line-height: 1.3; }
+.cx-caret { display: inline-block; width: 2px; height: 1.05em; background: #111; vertical-align: middle; animation: calcBlink 1s steps(1) infinite; }
+@keyframes calcBlink { 50% { opacity: 0; } }
+.cx-ch { white-space: pre; }
+.cx-slot { display: inline-flex; align-items: center; }
+.cx-box { display: inline-block; width: 0.6em; height: 0.8em; border: 1px dotted #333; vertical-align: middle; margin: 0 1px; }
+.cx-frac { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; font-size: 0.8em; margin: 0 2px; line-height: 1.1; }
+.cx-frac > span:first-child { border-bottom: 1.5px solid #111; padding: 0 3px; }
+.cx-frac > span:last-child { padding: 0 3px; }
+.cx-sqrt { display: inline-flex; align-items: flex-end; }
+.cx-rad { font-size: 1.1em; line-height: 1; }
+.cx-under { border-top: 1.5px solid #111; padding: 0 2px; display: inline-flex; align-items: center; }
+.cx-idx { font-size: 0.55em; margin-right: -4px; align-self: flex-start; }
+.cx-sup { font-size: 0.65em; vertical-align: 0.6em; display: inline-flex; }
+.cx-sub { font-size: 0.65em; vertical-align: -0.3em; display: inline-flex; }
+.cx-abs { border-left: 1.5px solid #111; border-right: 1.5px solid #111; padding: 0 2px; display: inline-flex; }
+.cx-bigop { display: inline-flex; flex-direction: column; align-items: center; vertical-align: middle; line-height: 1; margin-right: 2px; }
+.cx-bigop .cx-sym { font-size: 1.3em; }
+.cx-bigop .cx-lim { font-size: 0.55em; min-height: 0.8em; }
+.cx-at { font-size: 0.9em; }
+.cx-msg { height: 100%; display: flex; align-items: center; justify-content: center; text-align: center; font-weight: 700; font-size: 0.85rem; }
+.cx-hint { font-size: 0.7rem; font-weight: 700; }
+/* Menu chế độ: lưới 4 cột như máy thật */
+.cx-menu { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; font-size: 0.55rem; height: 100%; padding-top: 2px; }
+.cx-mi { display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 3px; text-align: center; line-height: 1.1; }
+.cx-mi b { font-size: 0.8rem; }
+.cx-mi.sel { background: #111; color: #cdd6c6; }
+.cx-list { font-size: 0.72rem; line-height: 1.35; overflow: hidden; }
+.cx-list-t { font-weight: 800; border-bottom: 1px solid #111; margin-bottom: 1px; }
+.cx-li { padding: 0 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cx-li.sel { background: #111; color: #cdd6c6; }
+.cx-grid-t, .cx-prompt-t, .cx-solved-t { font-size: 0.66rem; font-weight: 800; }
+.cx-grid { border-collapse: collapse; width: 100%; font-size: 0.72rem; text-align: center; }
+.cx-grid th { font-weight: 800; border-bottom: 1px solid #111; }
+.cx-grid td { padding: 1px 2px; height: 18px; }
+.cx-grid td.sel { background: #111; color: #cdd6c6; }
+.cx-grid td.sel .cx-frac > span:first-child { border-color: #cdd6c6; }
+.cx-prompt { display: flex; align-items: center; gap: 4px; font-size: 1.1rem; }
+.cx-prompt .cx-expr { flex: 1; }
+.cx-solved { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex: 1; }
+.cx-lab { font-size: 0.95rem; font-weight: 700; white-space: nowrap; }
+.cx-val { font-size: 1.3rem; font-weight: 600; white-space: nowrap; text-align: right; }
+.cx-more { text-align: right; font-size: 0.6rem; }
+.cx-table { border-collapse: collapse; width: 100%; font-size: 0.7rem; text-align: right; }
+.cx-table th { border-bottom: 1px solid #111; text-align: center; }
+.cx-table td { padding: 0 3px; height: 18px; }
+.cx-table td:first-child { text-align: left; font-size: 0.55rem; width: 12px; }
+.cx-table tr.sel td { background: #111; color: #cdd6c6; }
+
+/* Phím */
+.ck {
+    position: relative; border: none; cursor: pointer; font-family: inherit; padding: 0;
+    border-radius: 8px; color: #f1f5f9; font-weight: 700; transition: transform 0.06s, filter 0.06s;
+}
+.ck.ck-down { transform: translateY(1px) scale(0.96); filter: brightness(1.35); }
+.ck-sub { position: absolute; left: -2px; right: -2px; top: -12px; display: flex; justify-content: space-between; font-size: 0.48rem; pointer-events: none; white-space: nowrap; }
+.ck-sub i { font-style: normal; font-weight: 700; }
+.ck-s { color: #e8c35a; }
+.ck-a { color: #ef6b6b; margin-left: auto; }
+.calc-shift-on .ck-s { color: #fff; text-shadow: 0 0 6px #facc15; }
+.calc-alpha-on .ck-a { color: #fff; text-shadow: 0 0 6px #ef4444; }
+
+/* Hàng trên: SHIFT ALPHA … phím tròn … MENU ON */
+.calc-upper { display: grid; grid-template-columns: 1fr 104px 1fr; gap: 8px; align-items: center; margin-bottom: 12px; }
+.calc-side { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 6px; }
+.ck-pill { height: 20px; font-size: 0.55rem; border-radius: 10px; background: linear-gradient(180deg, #2c323d, #161a21); box-shadow: 0 2px 0 #000, inset 0 1px 0 rgba(255,255,255,0.1); color: #d6dbe3; }
+.ck-pill.ck-shift { color: #e8c35a; }
+.ck-pill.ck-alpha { color: #ef6b6b; }
+.calc-shift-on .ck-pill.ck-shift { background: #e8c35a; color: #111; }
+.calc-alpha-on .ck-pill.ck-alpha { background: #e04848; color: #fff; }
+.calc-side .ck-fn { height: 22px; font-size: 0.6rem; }
+.calc-pad { position: relative; width: 104px; height: 74px; border-radius: 50%; background: radial-gradient(circle at 50% 38%, #4a5262, #232831 70%); box-shadow: 0 3px 0 #000, inset 0 1px 0 rgba(255,255,255,0.18); }
+.calc-pad::after { content: ""; position: absolute; left: 50%; top: 50%; width: 30px; height: 22px; transform: translate(-50%, -50%); border-radius: 50%; background: #1a1e25; box-shadow: inset 0 1px 2px rgba(0,0,0,0.8); pointer-events: none; }
+.calc-pad-label { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); text-align: center; font-size: 0.4rem; color: #8b95a7; z-index: 1; pointer-events: none; letter-spacing: 0.05em; }
+.ck-dir { position: absolute; background: transparent; color: #cbd5e1; font-size: 0.55rem; border-radius: 6px; }
+.ck-dir:hover { color: #fff; background: rgba(255,255,255,0.06); }
+.ck-dir.up { left: 32px; top: 0; width: 40px; height: 24px; }
+.ck-dir.down { left: 32px; bottom: 0; width: 40px; height: 24px; }
+.ck-dir.left { left: 0; top: 22px; width: 32px; height: 30px; }
+.ck-dir.right { right: 0; top: 22px; width: 32px; height: 30px; }
+
+/* Phím hàm: 6 cột */
+.calc-fn { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px 6px; margin-bottom: 14px; padding-top: 4px; }
+.ck-fn {
+    height: 25px; font-size: 0.68rem; background: linear-gradient(180deg, #2f3540, #181c23);
+    box-shadow: 0 2px 0 #000, inset 0 1px 0 rgba(255,255,255,0.1); border-radius: 7px;
+}
+/* Phím số: 5 cột */
+.calc-num { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px 8px; padding-top: 4px; }
+.ck-num {
+    height: 36px; font-size: 1.05rem; color: #111; border-radius: 9px;
+    background: linear-gradient(180deg, #eef0f3, #c9cdd4); box-shadow: 0 3px 0 #6b7078, inset 0 1px 0 #fff;
+}
+.ck-num.ck-blue { color: #fff; background: linear-gradient(180deg, #4174dc, #2552b3); box-shadow: 0 3px 0 #163271, inset 0 1px 0 rgba(255,255,255,0.35); font-size: 0.85rem; }
+.ck-num[data-k="×10ˣ"], .ck-num[data-k="Ans"] { font-size: 0.78rem; }
+
+/* ============================================
+   TẠO BÀI TẬP — tùy chọn loại, số câu, mức độ
+============================================ */
+.quiz-opts { display: flex; flex-direction: column; gap: 14px; width: 100%; }
+.quiz-opt-row { display: flex; align-items: center; gap: 14px; }
+.quiz-opt-row .quiz-num-label { width: 92px; flex-shrink: 0; text-align: right; }
+.quiz-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.quiz-chip {
+    padding: 8px 14px; border-radius: 10px; border: 2px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.04); color: #94a3b8; font-size: 0.85rem; font-weight: 600;
+    cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px;
+}
+.quiz-chip:hover { border-color: #3b82f6; color: #93c5fd; }
+.quiz-chip.active { border-color: #3b82f6; background: rgba(59,130,246,0.2); color: #93c5fd; box-shadow: 0 0 12px rgba(59,130,246,0.3); }
+.quiz-stepper { display: inline-flex; align-items: center; gap: 6px; }
+.quiz-step {
+    width: 38px; height: 38px; border-radius: 10px; border: 2px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.04); color: #94a3b8; cursor: pointer; transition: all 0.2s;
+}
+.quiz-step:hover { border-color: #3b82f6; color: #93c5fd; }
+#quiz-num-input {
+    width: 64px; height: 38px; border-radius: 10px; border: 2px solid #3b82f6; background: rgba(59,130,246,0.12);
+    color: #e2e8f0; font-size: 1.1rem; font-weight: 700; text-align: center; -moz-appearance: textfield;
+}
+#quiz-num-input::-webkit-inner-spin-button, #quiz-num-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.quiz-solution-btn { align-self: flex-start; }
+.quiz-explanation.quiz-solution { white-space: pre-line; border-color: rgba(59,130,246,0.35); background: rgba(59,130,246,0.08); }
+.quiz-review-item.review-essay { border-left: 3px solid #3b82f6; }
+@media (max-width: 560px) {
+    .quiz-opt-row { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .quiz-opt-row .quiz-num-label { width: auto; text-align: left; }
+}
+
+/* ============================================
+   KHUNG CÂU HỎI — điều hướng, cỡ chữ, phóng to, kéo đổi kích thước
+============================================ */
+.quiz-container { --quiz-scale: 1; resize: both; min-width: 360px; min-height: 260px; max-width: 98vw; max-height: 96vh; }
+.quiz-container.quiz-expanded { width: 96vw !important; height: 92vh !important; max-height: 92vh; }
+.quiz-question-text { font-size: calc(1.05rem * var(--quiz-scale)); }
+.quiz-question-num { font-size: calc(0.75rem * var(--quiz-scale)); }
+.quiz-option { font-size: calc(0.95rem * var(--quiz-scale)); }
+.quiz-option-key { width: calc(30px * var(--quiz-scale)); height: calc(30px * var(--quiz-scale)); min-width: calc(30px * var(--quiz-scale)); font-size: calc(0.85rem * var(--quiz-scale)); }
+.quiz-explanation { font-size: calc(0.9rem * var(--quiz-scale)); }
+.quiz-solution-btn { font-size: calc(0.95rem * var(--quiz-scale)); }
+
+.quiz-toolbar { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: -14px 0 -6px; cursor: grab; user-select: none; touch-action: none; }
+.quiz-toolbar.dragging { cursor: grabbing; }
+.quiz-grip { font-size: 0.72rem; color: #64748b; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+.quiz-size-tools { display: flex; align-items: center; gap: 6px; cursor: default; }
+.quiz-tool {
+    min-width: 34px; height: 30px; padding: 0 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.05); color: #cbd5e1; font-weight: 700; font-size: 0.85rem; cursor: pointer; transition: all 0.15s;
+}
+.quiz-tool:hover { border-color: #3b82f6; color: #93c5fd; background: rgba(59,130,246,0.12); }
+.quiz-font-val { min-width: 42px; text-align: center; font-size: 0.75rem; color: #94a3b8; font-weight: 600; }
+
+.quiz-nav { align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.quiz-nav .quiz-btn:disabled { opacity: 0.35; cursor: default; }
+.quiz-dots { flex: 1; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.quiz-dot {
+    width: 32px; height: 32px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.04); color: #94a3b8; font-size: 0.8rem; font-weight: 700; cursor: pointer; transition: all 0.15s;
+}
+.quiz-dot:hover { border-color: #3b82f6; color: #93c5fd; }
+.quiz-dot.done { background: rgba(16,185,129,0.15); border-color: rgba(16,185,129,0.5); color: #6ee7b7; }
+.quiz-dot.current { border-color: #3b82f6; background: #3b82f6; color: #fff; box-shadow: 0 0 10px rgba(59,130,246,0.5); }
+.quiz-tool-close:hover { border-color: #ef4444; color: #fff; background: #ef4444; }

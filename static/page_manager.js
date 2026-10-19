@@ -1073,10 +1073,34 @@ function initCanvasTextInteraction() {
   });
 
   canvas.on('mouse:up', () => {
-    if (origModeWasDraw && typeof currentMode !== 'undefined' && currentMode === 'draw') {
+    if (origModeWasDraw && typeof currentMode !== 'undefined' && currentMode === 'draw' && !editingFromDraw) {
       canvas.isDrawingMode = true;
       origModeWasDraw = false;
     }
+  });
+
+  // Chữ (mic, nhận dạng, làm đẹp): bấm-kéo = DI CHUYỂN, bấm đúp = SỬA CHỮ.
+  // Nếu để chữ luôn sửa được thì bấm một lần là vào chế độ gõ, kéo chuột chỉ bôi đen chữ chứ không di chuyển.
+  const isEditableText = (o) => o && (o.type === 'textbox' || o.type === 'i-text');
+  let editingFromDraw = false;
+  canvas.on('object:added', ({ target }) => {
+    if (isEditableText(target) && !target.isEditing) target.editable = false;
+  });
+  canvas.on('mouse:dblclick', ({ target }) => {
+    if (!isEditableText(target)) return;
+    editingFromDraw = typeof currentMode !== 'undefined' && currentMode === 'draw';
+    canvas.isDrawingMode = false;
+    target.editable = true;
+    canvas.setActiveObject(target);
+    target.enterEditing();
+    canvas.requestRenderAll();
+  });
+  canvas.on('text:editing:exited', ({ target }) => {
+    if (target) target.editable = false;
+    if (editingFromDraw && typeof currentMode !== 'undefined' && currentMode === 'draw') canvas.isDrawingMode = true;
+    editingFromDraw = false;
+    origModeWasDraw = false;
+    if (typeof saveState === 'function') saveState();
   });
 }
 
