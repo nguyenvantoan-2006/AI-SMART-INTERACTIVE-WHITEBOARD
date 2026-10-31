@@ -1175,6 +1175,13 @@ class VoiceAssistantAgent:
         sys_instr = """You are an AI Voice Assistant and Chemistry/Science Tutor for a smart whiteboard app. 
 The user said something via microphone. Your job is to determine their intent.
 
+ƯU TIÊN SỐ 1 — ĐỌC ĐỀ BÀI / ĐOẠN VĂN ĐỂ GHI LÊN BẢNG:
+Nếu câu nói là một đoạn dài (từ khoảng 15 từ trở lên) hoặc giống đề bài hóa học: có số liệu và đơn vị (gam, g, ml, lít, mol, M, %, đkc),
+hoặc có các cụm "cho", "tính", "hòa tan", "dẫn", "đốt cháy", "nung", "thu được", "sau phản ứng", "xác định"...
+→ LUÔN trả về add_text, chép NGUYÊN VĂN toàn bộ câu nói (không tóm tắt, không giải bài, không thêm lời giải thích),
+chỉ đổi tên chất/công thức đọc bằng lời sang ký hiệu có chỉ số Unicode (vd "cờ ô hai" → CO₂, "natri hiđroxit" → NaOH) và thêm dấu câu.
+TUYỆT ĐỐI KHÔNG trả về "concept" cho trường hợp này, kể cả khi đề bài nhắc tới một dạng bài hay khái niệm.
+
 1. BOARD CONTROL COMMANDS:
 - Clear all: {"type": "command", "action": "clear_board", "reply": "Đã xóa toàn bộ bảng"}
 - Erase specific part: {"type": "command", "action": "erase_region", "args": {"box": [ymin, xmin, ymax, xmax], "target_text": "..."}, "reply": "Đã xóa phần bạn yêu cầu"}
@@ -1190,9 +1197,10 @@ The user said something via microphone. Your job is to determine their intent.
 - Analyze/Solve/Visualize: {"type": "command", "action": "analyze", "reply": "Đang xử lý..."}
 - Change tools: {"type": "command", "action": "set_mode", "args": {"mode": "draw" | "lasso" | "erase"}, "reply": "Đã chuyển công cụ"}
 
-2. SCIENCE & CHEMISTRY CONCEPT INQUIRIES (RẤT QUAN TRỌNG):
-Khi người dùng hỏi hoặc yêu cầu: "nêu khái niệm...", "khái niệm... là gì", "định nghĩa...", "tính chất của...", "các chất phản ứng với...", "giải thích về...":
-BẮT BUỘC trả về type "concept" chuẩn sư phạm THPT, trình bày chỉn chu, khoa học:
+2. SCIENCE & CHEMISTRY CONCEPT INQUIRIES:
+CHỈ KHI người dùng HỎI TRỰC TIẾP (câu ngắn, dạng câu hỏi/yêu cầu giải thích): "nêu khái niệm...", "khái niệm... là gì", "định nghĩa...", "tính chất của...", "các chất phản ứng với...", "giải thích về...":
+(Nếu là đề bài/đoạn văn để ghi lên bảng → xem ƯU TIÊN SỐ 1, dùng add_text.)
+Trả về type "concept" chuẩn sư phạm THPT, trình bày chỉn chu, khoa học:
 {
   "type": "concept",
   "title": "<Tên khái niệm chuẩn SGK, vd: Khái niệm Axit (Acid) / Các chất phản ứng với Axit>",
@@ -1229,6 +1237,36 @@ Respond STRICTLY in JSON format (without markdown backticks).
         result = await call_llm(prompt, sys_instr)
         await send_log("VoiceAgent", "Command processed.")
         return result
+
+
+DICTATE_PROMPT = """Bạn là thư ký chép bảng cho giáo viên Hóa học Việt Nam. Đầu vào là văn bản nhận dạng giọng nói (thường thiếu dấu câu).
+Nhiệm vụ: CHÉP LẠI NGUYÊN VĂN để ghi lên bảng.
+BẮT BUỘC:
+- Giữ nguyên từng câu chữ, thứ tự và độ dài. KHÔNG tóm tắt, KHÔNG bỏ câu, KHÔNG giải bài, KHÔNG thêm giải thích hay tiêu đề.
+- Chỉ được: (1) đổi MỌI tên chất (tiếng Việt) và công thức đọc bằng lời sang ký hiệu hóa học có chỉ số Unicode, không bỏ sót chất nào
+  (vd "cờ ô hai" → CO₂, "hát hai ét ô bốn" → H₂SO₄, "natri hiđroxit" → NaOH, "canxi cacbonat" → CaCO₃, "kẽm" → Zn,
+  "axit clohiđric" → HCl, "khí hiđro" → khí H₂, "sắt ba clorua" → FeCl₃, "H2O" → H₂O); giữ các từ đi kèm như "khí", "dung dịch";
+  (2) viết số liệu và đơn vị gọn (vd "hai phẩy hai bốn lít" → 2,24 lít, "không phẩy một mol" → 0,1 mol);
+  (3) thêm dấu câu, viết hoa đầu câu; (4) sửa lỗi nhận dạng giọng nói rõ ràng (vd "hoà tang" → "hòa tan").
+- Nếu người đọc nói "câu a", "ý b"... thì viết thành a), b) ĐÚNG chữ cái họ đọc (không tự đánh lại thứ tự, không thêm ý họ không đọc),
+  mỗi ý xuống một dòng mới (dùng \\n). Ngoài ra không tự xuống dòng.
+Trả về JSON: {"text": "<đoạn văn đã chép>"}"""
+
+
+async def dictate_to_board_text(raw: str) -> str:
+    """Chuẩn hóa lời đọc để ghi bảng. AI lỗi, hoặc trả về đoạn ngắn/dài bất thường (tóm tắt / thêm lời) → giữ nguyên lời đọc."""
+    try:
+        res = await call_llm([f"Văn bản nhận dạng giọng nói:\n{raw}"], DICTATE_PROMPT, hedge_delay=2.5, total_timeout=10.0)
+    except Exception as e:
+        print(f"[Dictate] Lỗi AI: {e}")
+        return raw
+    text = (res.get("text") or "").strip() if isinstance(res, dict) and not res.get("_llm_error") else ""
+    n_in, n_out = len(raw.split()), len(text.split())
+    # Đọc công thức bằng lời ("cờ ô hai" → CO₂) làm số từ giảm, nên cho phép tới 40%; dài hơn 130% là AI đã thêm lời
+    if not text or n_out < 0.4 * n_in or n_out > 1.3 * n_in + 3:
+        print(f"[Dictate] Bỏ kết quả AI ({n_in} → {n_out} từ), dùng nguyên lời đọc")
+        return raw
+    return text
 
 
 # --- WORKFLOW ---
@@ -1455,6 +1493,13 @@ Output strictly valid JSON (no markdown, no backticks):
                 except Exception as _e:
                     print(f"[VoiceAgent] Tạo speech_script lỗi: {_e}")
             await websocket.send_json({"type": "result_voice_agent", "data": res})
+
+        elif action == "voice_dictate":
+            # Micro chế độ "Ghi lên bảng": chép nguyên văn, chỉ chuẩn hóa tên chất/công thức + dấu câu
+            raw = req.get("text", "").strip()
+            await send_log("VoiceAgent", "📝 Đang chép lời đọc lên bảng...")
+            text = await dictate_to_board_text(raw) if raw else ""
+            await websocket.send_json({"type": "result_dictate", "text": text})
 
         elif action == "text_chemistry":
             problem_text = req.get("text", "").strip()

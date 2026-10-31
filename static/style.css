@@ -4604,3 +4604,11 @@ img.exlib-page { height: auto; }
 .deep-log-row b { color: #93c5fd; }
 .deep-log-row.exchange b { color: #fca5a5; }
 .deep-timing { color: var(--muted); font-size: 0.75rem; text-align: right; }
+
+/* ---- Micro: chọn chế độ Ghi lên bảng / Ra lệnh, ô chép lời đọc nhiều dòng ---- */
+.voice-recorder-popup { flex-wrap: wrap; border-radius: 22px; min-width: min(560px, 90vw); }
+.vr-mode { flex-basis: 100%; display: flex; gap: 6px; padding: 2px 0 4px; }
+.vr-mode-btn { background: transparent; border: 1px solid rgba(148,163,184,0.3); color: #94a3b8; border-radius: 14px; padding: 3px 12px; font-size: 0.78rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+.vr-mode-btn:hover { color: #e2e8f0; border-color: rgba(148,163,184,0.6); }
+.vr-mode-btn.active { background: rgba(59,130,246,0.2); border-color: #3b82f6; color: #bfdbfe; }
+textarea.vr-transcript-input { resize: none; line-height: 1.4; max-height: 120px; overflow-y: auto; padding: 4px 0; }

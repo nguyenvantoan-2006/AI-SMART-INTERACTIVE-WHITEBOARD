@@ -974,6 +974,35 @@ function localVoiceCommand(text) {
 // Câu nói có nhắc tới nội dung TRÊN BẢNG (xóa phần…, đổi màu chữ…) thì AI mới cần xem ảnh bảng
 const VOICE_NEEDS_BOARD = /xóa|xoá|tô|màu|đọc|bảng|cái này|chỗ này|phần này|bài này|trên đây|ở trên|ở dưới|viết|chữ/;
 
+// ---- Micro chế độ "Ghi lên bảng": chép nguyên văn lời đọc (AI chỉ chuẩn hóa công thức + dấu câu) ----
+function sendDictateToAI(fullText) {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/analyze`);
+    let done = false;
+    // Lỗi kết nối/AI → vẫn ghi lời đọc gốc lên bảng, không để mất nội dung
+    const finish = (text) => {
+        if (done) return;
+        done = true;
+        setLoading(false);
+        addTextToCanvas(text || fullText);
+    };
+
+    ws.onopen = () => {
+        setLoading(true, '📝 Đang chép lời đọc lên bảng...');
+        ws.send(JSON.stringify({ text: fullText, action: 'voice_dictate' }));
+    };
+    ws.onmessage = (event) => {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'result_dictate') {
+            ws.close();
+            finish(data.text);
+        }
+    };
+    ws.onerror = () => finish(fullText);
+    ws.onclose = () => finish(fullText);
+}
+
 // ---- Hàm dùng chung cho Voice Agent (thay thế duplicate code) ----
 function sendVoiceToAI(fullText) {
     const local = localVoiceCommand(fullText);
@@ -4005,7 +4034,43 @@ let isRecording = false;
 let vrTimerInterval = null;
 let vrSeconds = 0;
 let currentTranscript = "";
-let silenceTimer = null;
+// Người dùng muốn thu tiếp: true từ lúc bấm Micro tới khi bấm dừng/Gửi/Hủy.
+// Trình duyệt tự kết thúc phiên nhận dạng (im lặng, ~60s) → tự bật lại để thu liên tục đoạn dài.
+let vrWantRecording = false;
+let vrRestartTimes = [];
+
+// ---- Chế độ Micro: 📝 Ghi lên bảng (mặc định) / 💬 Ra lệnh / Hỏi AI ----
+const VR_MODE_KEY = 'micMode';
+function getMicMode() {
+    try { return localStorage.getItem(VR_MODE_KEY) === 'command' ? 'command' : 'dictate'; } catch { return 'dictate'; }
+}
+function setMicMode(mode) {
+    try { localStorage.setItem(VR_MODE_KEY, mode); } catch { /* bỏ qua */ }
+    document.querySelectorAll('.vr-mode-btn').forEach(b => {
+        const on = b.dataset.mode === mode;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    if (vrBtnSubmit) {
+        vrBtnSubmit.innerHTML = mode === 'dictate'
+            ? '<i class="fas fa-pen"></i> Ghi lên bảng'
+            : '<i class="fas fa-paper-plane"></i> Gửi thực hiện';
+    }
+}
+document.querySelectorAll('.vr-mode-btn').forEach(b => b.addEventListener('click', () => {
+    setMicMode(b.dataset.mode);
+    vrTranscriptInput?.focus();
+}));
+setMicMode(getMicMode());
+
+// Ô chép lời đọc tự cao lên theo nội dung (tối đa ~5 dòng, rồi cuộn)
+function vrAutosize() {
+    if (!vrTranscriptInput) return;
+    vrTranscriptInput.style.height = 'auto';
+    vrTranscriptInput.style.height = Math.min(vrTranscriptInput.scrollHeight, 120) + 'px';
+    vrTranscriptInput.scrollTop = vrTranscriptInput.scrollHeight;
+}
+vrTranscriptInput?.addEventListener('input', vrAutosize);
 
 function setMicRecordingUI(active) {
     isRecording = active;
@@ -4018,8 +4083,16 @@ function setMicRecordingUI(active) {
         vrBtnMic?.classList.remove('recording');
         if (vrWaves) vrWaves.style.display = 'none';
         clearInterval(vrTimerInterval);
-        clearTimeout(silenceTimer);
     }
+}
+
+// Tạm dừng thu (giữ nguyên đoạn đã thu để nói tiếp hoặc sửa)
+function pauseVr() {
+    vrWantRecording = false;
+    if (recognition) {
+        try { recognition.stop(); } catch(e) {}
+    }
+    setMicRecordingUI(false);
 }
 
 function updateVrTime() {
@@ -4029,6 +4102,7 @@ function updateVrTime() {
 }
 
 function stopVr() {
+    vrWantRecording = false;
     setMicRecordingUI(false);
     if (recognition) {
         try { recognition.abort(); } catch(e) {}
@@ -4040,56 +4114,55 @@ function stopVr() {
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-function startVr() {
+// resume = true: nói tiếp sau khi tạm dừng — giữ đoạn đã thu (kể cả phần thầy/cô đã sửa tay)
+function startVr(resume = false) {
     // Luôn mở popup ngay lập tức để người dùng thấy phản hồi trực quan trên màn hình
     vrPopup?.classList.remove('hidden');
-    vrSeconds = 0;
+    if (resume) {
+        currentTranscript = vrTranscriptInput ? vrTranscriptInput.value.trim() + ' ' : currentTranscript;
+    } else {
+        vrSeconds = 0;
+        currentTranscript = "";
+        if (vrTranscriptInput) vrTranscriptInput.value = "";
+    }
     updateVrTime();
-    currentTranscript = "";
     window._currentInterim = "";
     if (vrTranscriptInput) {
-        vrTranscriptInput.value = "";
-        vrTranscriptInput.placeholder = "Đang lắng nghe giọng nói của thầy/cô... (hoặc gõ lệnh tại đây)";
+        vrTranscriptInput.placeholder = "Đang lắng nghe giọng nói của thầy/cô... (hoặc gõ tại đây)";
         vrTranscriptInput.focus();
+        vrAutosize();
     }
 
     if (!SpeechRecognition) {
         setMicRecordingUI(false);
         showToast('Trình duyệt chưa hỗ trợ nhận diện giọng nói tự động. Thầy/cô có thể gõ lệnh trực tiếp!', 'warn');
-        if (vrTranscriptInput) vrTranscriptInput.placeholder = "Nhập lệnh (ví dụ: đổi màu đỏ, xóa bảng, H2SO4)...";
+        if (vrTranscriptInput) vrTranscriptInput.placeholder = "Nhập nội dung (ví dụ: Cho 5,6 gam Fe tác dụng với HCl...)";
         return;
     }
 
+    vrWantRecording = true;
+    vrRestartTimes = [];
+    setMicRecordingUI(true);
+    clearInterval(vrTimerInterval);
+    vrTimerInterval = setInterval(() => { vrSeconds++; updateVrTime(); }, 1000);
+    _startRecognition();
+}
+
+// Mở một phiên nhận dạng; phiên kết thúc mà người dùng chưa bấm dừng/Gửi → tự mở phiên mới, nối tiếp đoạn đã thu
+function _startRecognition() {
     // Luôn dọn dẹp phiên trước nếu đang chạy dở
     if (recognition) {
+        recognition.onend = null;
         try { recognition.abort(); } catch(e) {}
         recognition = null;
     }
 
+    let fatal = false;
     try {
         recognition = new SpeechRecognition();
         recognition.lang = 'vi-VN';
         recognition.continuous = true;
         recognition.interimResults = true;
-
-        recognition.onstart = () => {
-            setMicRecordingUI(true);
-            vrSeconds = 0;
-            updateVrTime();
-            
-            clearInterval(vrTimerInterval);
-            vrTimerInterval = setInterval(() => {
-                vrSeconds++;
-                updateVrTime();
-            }, 1000);
-            
-            clearTimeout(silenceTimer);
-            silenceTimer = setTimeout(() => {
-                if (isRecording && recognition) {
-                    try { recognition.stop(); } catch(e) {}
-                }
-            }, 8000);
-        };
 
         recognition.onresult = (event) => {
             let finalTrans = "";
@@ -4105,49 +4178,58 @@ function startVr() {
                 currentTranscript += finalTrans;
             }
             window._currentInterim = interimTrans;
-            
+
             const previewText = (currentTranscript + " " + interimTrans).trim();
             if (vrTranscriptInput && previewText) {
                 vrTranscriptInput.value = previewText;
+                vrAutosize();
             }
-
-            clearTimeout(silenceTimer);
-            silenceTimer = setTimeout(() => {
-                if (isRecording && recognition) {
-                    try { recognition.stop(); } catch(e) {}
-                }
-            }, interimTrans.trim() ? 2500 : 1500);
         };
 
         recognition.onerror = (event) => {
             console.warn('SpeechRecognition error:', event.error);
-            setMicRecordingUI(false);
-            if (event.error === 'not-allowed') {
+            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                fatal = true;
                 showToast('Chưa cấp quyền Micro! Thầy/cô hãy cho phép micro hoặc gõ lệnh trực tiếp.', 'warn');
-                if (vrTranscriptInput) vrTranscriptInput.placeholder = "Chưa cấp quyền micro. Gõ lệnh rồi bấm Gửi...";
+                if (vrTranscriptInput) vrTranscriptInput.placeholder = "Chưa cấp quyền micro. Gõ nội dung rồi bấm Gửi...";
             } else if (event.error === 'network') {
+                fatal = true;
                 showToast('Lỗi mạng kết nối giọng nói Google. Thầy/cô có thể gõ lệnh trực tiếp.', 'warn');
-                if (vrTranscriptInput) vrTranscriptInput.placeholder = "Nhập lệnh rồi bấm Gửi thực hiện...";
+                if (vrTranscriptInput) vrTranscriptInput.placeholder = "Nhập nội dung rồi bấm Gửi...";
             } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
                 showToast('Lỗi micro: ' + event.error, 'error');
             }
         };
 
         recognition.onend = () => {
+            // Giữ phần đang nói dở của phiên vừa kết thúc
+            if (window._currentInterim) {
+                currentTranscript += window._currentInterim + " ";
+                window._currentInterim = "";
+            }
+            const fullText = currentTranscript.trim();
+            if (vrTranscriptInput && fullText) { vrTranscriptInput.value = fullText; vrAutosize(); }
+
+            // Chống lặp vô hạn: quá 6 lần tự bật lại trong 15s (mic hỏng, không có tiếng) thì dừng
+            const now = Date.now();
+            vrRestartTimes = vrRestartTimes.filter(t => now - t < 15000);
+            if (vrWantRecording && !fatal && vrRestartTimes.length < 6) {
+                vrRestartTimes.push(now);
+                setTimeout(() => { if (vrWantRecording) _startRecognition(); }, 200);
+                return;
+            }
+            vrWantRecording = false;
             setMicRecordingUI(false);
-            const fullText = (currentTranscript + " " + (window._currentInterim || "")).trim();
             if (vrTranscriptInput) {
-                if (fullText) vrTranscriptInput.value = fullText;
-                vrTranscriptInput.placeholder = "Bấm [Gửi thực hiện] hoặc Enter để chạy...";
+                vrTranscriptInput.placeholder = "Bấm [Gửi] hoặc Enter để thực hiện...";
                 vrTranscriptInput.focus();
             }
         };
 
-        // Bật visual recording UI trước trong khi đợi trình duyệt mở mic
-        setMicRecordingUI(true);
         recognition.start();
     } catch (err) {
         console.error('Lỗi khi kích hoạt SpeechRecognition:', err);
+        vrWantRecording = false;
         setMicRecordingUI(false);
         showToast('Không thể mở micro trực tiếp. Thầy/cô có thể gõ lệnh!', 'warn');
     }
@@ -4159,35 +4241,31 @@ btnMic?.addEventListener('click', () => {
         startVr();
     } else if (isRecording) {
         // Đang nói -> bấm để tạm dừng ghi âm
-        if (recognition) {
-            try { recognition.stop(); } catch(e) {}
-        }
-        setMicRecordingUI(false);
+        pauseVr();
     } else {
-        // Đã mở nhưng dừng -> bấm để tiếp tục nói
-        startVr();
+        // Đã mở nhưng dừng -> bấm để nói tiếp (giữ đoạn đã thu)
+        startVr(true);
     }
 });
 
 // Bắt sự kiện bấm nút Micro bên trong Popup
 vrBtnMic?.addEventListener('click', () => {
     if (isRecording) {
-        if (recognition) {
-            try { recognition.stop(); } catch(e) {}
-        }
-        setMicRecordingUI(false);
+        pauseVr();
     } else {
-        startVr();
+        startVr(true);
     }
 });
 
-// Hàm gửi lệnh khi giáo viên bấm nút [Gửi thực hiện] hoặc nhấn Enter
+// Hàm gửi khi giáo viên bấm nút [Gửi] hoặc nhấn Enter
 const submitVoiceCommand = () => {
     const text = vrTranscriptInput ? vrTranscriptInput.value.trim() : "";
-    if (text) {
-        sendVoiceToAI(text);
+    if (!text) {
+        showToast('Chưa có nội dung để thực hiện!', 'warn');
+    } else if (getMicMode() === 'dictate') {
+        sendDictateToAI(text);
     } else {
-        showToast('Chưa có nội dung lệnh để thực hiện!', 'warn');
+        sendVoiceToAI(text);
     }
     stopVr();
 };
@@ -4195,7 +4273,8 @@ const submitVoiceCommand = () => {
 vrBtnSubmit?.addEventListener('click', submitVoiceCommand);
 
 vrTranscriptInput?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        // Enter = Gửi; Shift+Enter = xuống dòng khi sửa tay
         e.preventDefault();
         submitVoiceCommand();
     } else if (e.key === 'Escape') {
@@ -4281,7 +4360,11 @@ function _findTextSlot(w, h, withWidgets) {
 
 function addTextToCanvas(text) {
     const V = _visibleCanvasRect();
-    const maxWidth = Math.min(500, (V.right - V.left) * 0.8);
+    // Đoạn dài (đề bài đọc qua Micro): khung rộng hơn, chữ nhỏ hơn, tự xuống dòng theo chiều rộng khung
+    const isLong = text.length > 60 || text.includes('\n');
+    const maxWidth = isLong
+        ? Math.min(900, (V.right - V.left) - 2 * TEXT_PLACE_MARGIN)
+        : Math.min(500, (V.right - V.left) * 0.8);
     const textFill = (typeof currentColor !== 'undefined' && currentColor && currentColor !== '#0a1628')
         ? currentColor
         : '#ffffff';
@@ -4292,7 +4375,8 @@ function addTextToCanvas(text) {
         originX: 'left',
         originY: 'top',
         fill: textFill,
-        fontSize: 32,
+        fontSize: isLong ? 26 : 32,
+        lineHeight: isLong ? 1.3 : 1.16,
         fontFamily: 'Inter, "Segoe UI", Arial, sans-serif',
         width: maxWidth,
         textAlign: 'left',

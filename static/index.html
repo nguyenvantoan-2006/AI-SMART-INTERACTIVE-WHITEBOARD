@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=20261031_deeponly">
+    <link rel="stylesheet" href="style.css?v=20261031_dictate">
 </head>
 <body>
     <div class="app-layout" id="app-layout">
@@ -29,13 +29,17 @@
         <!-- Voice Recorder Popup -->
         <!-- Voice Recorder Popup (Chỉ thực hiện khi bấm Gửi) -->
         <div id="voice-recorder-popup" class="voice-recorder-popup hidden">
+            <div class="vr-mode" id="vr-mode" role="radiogroup" aria-label="Chế độ Micro">
+                <button class="vr-mode-btn" data-mode="dictate" role="radio" title="Chép nguyên văn lời đọc lên bảng">📝 Ghi lên bảng</button>
+                <button class="vr-mode-btn" data-mode="command" role="radio" title="Ra lệnh cho bảng hoặc hỏi AI">💬 Ra lệnh / Hỏi AI</button>
+            </div>
             <button class="vr-action-btn" id="vr-btn-delete" title="Hủy bỏ (Esc)"><i class="fas fa-times"></i></button>
             <button class="vr-action-btn vr-mic-btn" id="vr-btn-mic" title="Bật/Tắt thu âm giọng nói"><i class="fas fa-microphone"></i></button>
             <div class="vr-center">
                 <div class="vr-waves" id="vr-waves">
                     <div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div>
                 </div>
-                <input type="text" id="vr-transcript-input" class="vr-transcript-input" placeholder="Đang lắng nghe...">
+                <textarea id="vr-transcript-input" class="vr-transcript-input" rows="1" placeholder="Đang lắng nghe..."></textarea>
                 <span id="vr-time" class="vr-time">00:00</span>
             </div>
             <button class="vr-btn-submit" id="vr-btn-submit" title="Gửi thực hiện lệnh (Enter)">
@@ -311,7 +315,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/function-plot/1.23.0/function-plot.js"></script>
     <script src="chem_visuals.js?v=35"></script>
-    <script src="script.js?v=20261031_textplace"></script>
+    <script src="script.js?v=20261031_dictate"></script>
     <script src="virtual_lab.js?v=7"></script>
     <script src="exercise_lib.js?v=5"></script>
     <!-- Page Manager: multi-page + OCR dedup + i18n (loads AFTER script.js) -->
