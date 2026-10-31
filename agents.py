@@ -10,12 +10,17 @@ Luồng (Orchestrator điều phối bằng code, không tốn lượt gọi AI 
                                                          ▼
                                   asyncio.gather( TutorAgent (1 AI + TTS), QuizAgent (1 AI) )
 
-Chế độ "Nhanh" (SuperAgent trong main.py) giữ nguyên, không đi qua file này.
+Gặp lỗi trước khi có phương trình (hết lượt API, quá thời gian, lỗi agent) → ném AgentFailure,
+main.py tự chạy lại bằng SuperAgent (chế độ dự phòng). Lỗi ở Tutor/Quiz không lùi vì phương trình đã gửi rồi.
 """
 import asyncio
 import re
 import time
 from io import BytesIO
+
+
+class AgentFailure(Exception):
+    """Chế độ sâu không ra được phương trình → main.py chuyển sang SuperAgent."""
 
 
 def _m():
@@ -109,6 +114,8 @@ class VisionAgent:
             VISION_PROMPT,
         )
         res = res if isinstance(res, dict) else {"domain": "general"}
+        if res.get("_llm_error"):
+            raise AgentFailure(f"VisionAgent: {res.get('explanation', 'AI không phản hồi')}")
         domain = res.get("domain", "general")
         timer.add(self.name, time.perf_counter() - t, 1, f"domain={domain}")
         if domain == "chemistry":
@@ -167,6 +174,8 @@ class SolverAgent:
                 await send_log(self.name, "🤔 Chưa đủ sản phẩm → hỏi Gemini xác định sản phẩm...")
                 prompt = f"Draft as written: {draft.get('equation', '')}\nReactants: {reactants}\nProducts written: {products}"
             res = await M.call_llm([prompt], SOLVER_PROMPT, hedge_delay=2.5, total_timeout=12.0)
+            if res.get("_llm_error"):
+                raise AgentFailure(f"SolverAgent: {res.get('explanation', 'AI không phản hồi')}")
             ai_calls, source = 1, "gemini"
             reactants = res.get("reactants") or reactants
             products = res.get("products") or products
@@ -174,6 +183,8 @@ class SolverAgent:
             catalyst = res.get("catalyst") or catalyst
             # Kiểm chứng lại hệ số AI đưa ra bằng Python; AI sai hệ số thì dùng hệ số Python
             equation = self._python_balance(reactants, products, conditions) or res.get("equation", "")
+            if not equation:
+                raise AgentFailure("SolverAgent: không xác định được phương trình")
             await send_log(self.name, f"✍️ Đề xuất: {equation} → gửi VerifierAgent kiểm tra")
 
         # Tính toán bằng các hàm có sẵn
@@ -225,6 +236,7 @@ Không đổi phương trình. Tiếng Việt, chỉ số Unicode (H₂SO₄). T
 
 class TutorAgent:
     name = "TutorAgent"
+    TTS_TIMEOUT = 10.0   # generate_speech_script tự gọi lại tối đa 3 lần — chặn để không treo agent_done
 
     async def run(self, sol: dict, safety: dict, send_json, send_log, timer: AgentTimer):
         M = _m()
@@ -241,7 +253,9 @@ class TutorAgent:
         speech = ""
         try:
             from chem_tts_module import generate_speech_script
-            speech = await generate_speech_script(ped.get("lecture", ""))
+            speech = await asyncio.wait_for(generate_speech_script(ped.get("lecture", "")), timeout=self.TTS_TIMEOUT)
+        except asyncio.TimeoutError:
+            print(f"[TutorAgent] TTS quá {self.TTS_TIMEOUT:.0f}s → đọc thẳng lời giảng")
         except Exception as e:
             print(f"[TutorAgent] TTS lỗi: {e}")
         t_tts = time.perf_counter() - t2
@@ -283,6 +297,7 @@ class QuizAgent:
 # ============================================================
 class Orchestrator:
     MAX_FIX_ROUNDS = 2
+    PHASE1_TIMEOUT = 20.0   # giây — quá mức này chưa có phương trình thì lùi về SuperAgent
 
     def __init__(self, send_json, send_log):
         self.send_json = send_json
@@ -291,15 +306,32 @@ class Orchestrator:
 
     async def run(self, img, req: dict):
         """Domain hóa học: tự xử lý và gửi kết quả, trả về None.
-        Domain khác: trả kết quả VisionAgent để main.py dùng lại luồng hiển thị cũ."""
+        Domain khác: trả kết quả VisionAgent để main.py dùng lại luồng hiển thị cũ.
+        Lỗi trước khi có phương trình → AgentFailure."""
         M = _m()
         log = self.send_log
         await log("Orchestrator", "🧭 Chế độ Phân tích sâu: Vision → Solver ⇄ Verifier → Tutor ‖ Quiz")
 
-        vision = await VisionAgent().run(img, log, self.timer)
-        if vision.get("domain") != "chemistry" or not vision.get("reactants"):
+        try:
+            vision, sol, ver, rounds = await asyncio.wait_for(self._solve(img, req), timeout=self.PHASE1_TIMEOUT)
+        except asyncio.TimeoutError:
+            self.timer.summary()
+            raise AgentFailure(f"quá {self.PHASE1_TIMEOUT:.0f}s chưa có phương trình")
+        except AgentFailure:
+            self.timer.summary()
+            raise
+        if sol is None:
             self.timer.summary()
             return vision
+        await self._send_results(M, vision, sol, ver, rounds)
+        return None
+
+    async def _solve(self, img, req: dict):
+        """Đợt 1: Vision → Solver ⇄ Verifier. Trả (vision, None, None, 0) nếu không phải phương trình hóa học."""
+        log = self.send_log
+        vision = await VisionAgent().run(img, log, self.timer)
+        if vision.get("domain") != "chemistry" or not vision.get("reactants"):
+            return vision, None, None, 0
 
         draft = dict(vision, mol_input=req.get("mol_input") or {})
         solver, verifier = SolverAgent(), VerifierAgent()
@@ -313,8 +345,13 @@ class Orchestrator:
                                         products=sol["products"]), log, self.timer, feedback=ver["check"])
             ver = await verifier.run(sol, log, self.timer)
         if not ver["ok"]:
+            if any(e["type"] == "format_error" for e in ver["check"]["errors"]):
+                raise AgentFailure("VerifierAgent: phương trình không đọc được sau 2 vòng sửa")
             await log("Orchestrator", "⚠️ Hết lượt sửa — hiển thị kết quả tốt nhất, kèm cảnh báo của VerifierAgent")
+        return vision, sol, ver, rounds
 
+    async def _send_results(self, M, vision, sol, ver, rounds):
+        log = self.send_log
         # ── ĐỢT 1: phương trình + an toàn, gửi ngay ──
         safety = ver["safety"]
         sensory = M._detect_sound_and_olfactory(sol["reactants"], sol["products"])

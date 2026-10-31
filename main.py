@@ -270,7 +270,7 @@ async def call_llm(prompt: list, system_instruction: str,
         _cached_key = _load_api_key()
     current_key = _cached_key
     if not current_key:
-        return {"domain": "general", "explanation": "❌ Chưa cấu hình GEMINI_API_KEY trong file .env!"}
+        return {"domain": "general", "explanation": "❌ Chưa cấu hình GEMINI_API_KEY trong file .env!", "_llm_error": True}
 
     import time
     active_model_name = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
@@ -306,7 +306,7 @@ async def call_llm(prompt: list, system_instruction: str,
                     parsed = task.result()
                 except _ApiKeyInvalid:
                     print(f"[LLM] API KEY KHÔNG HỢP LỆ! Vui lòng lấy key mới.")
-                    return {"domain": "general", "explanation": "API Key không hợp lệ! Vui lòng cập nhật GEMINI_API_KEY trong file .env."}
+                    return {"domain": "general", "explanation": "API Key không hợp lệ! Vui lòng cập nhật GEMINI_API_KEY trong file .env.", "_llm_error": True}
                 except Exception as e:
                     print(f"[LLM ERROR with {m}]: {type(e).__name__}: {str(e)[:150]}", flush=True)
                     _model_cooldown_until[m] = time.time() + LLM_COOLDOWN_SECONDS
@@ -328,7 +328,8 @@ async def call_llm(prompt: list, system_instruction: str,
         for task in running:
             task.cancel()
 
-    return {"domain": "general", "explanation": "Hệ thống AI tạm thời bận do chạm giới hạn lượt gọi. Vui lòng thử lại sau vài giây!"}
+    # _llm_error: để agent (agents.py) nhận ra lỗi và chuyển sang chế độ dự phòng
+    return {"domain": "general", "explanation": "Hệ thống AI tạm thời bận do chạm giới hạn lượt gọi. Vui lòng thử lại sau vài giây!", "_llm_error": True}
 
 
 # --- AGENTS ---
@@ -1303,18 +1304,30 @@ Output strictly valid JSON (no markdown, no backticks):
         elif action == "auto_analyze":
             import time
             t_start = time.perf_counter()
-            if req.get("mode") == "deep":
-                # Chế độ "Phân tích sâu": nhiều agent (agents.py). Hóa học → Orchestrator tự gửi kết quả theo đợt;
-                # domain khác → trả kết quả VisionAgent để dùng lại luồng hiển thị bên dưới.
+            fallback_used = False
+            res = None
+            if req.get("mode", "deep") == "deep":
+                # Chế độ "Phân tích sâu" (mặc định): nhiều agent (agents.py). Hóa học → Orchestrator tự gửi kết quả
+                # theo đợt; domain khác → trả kết quả VisionAgent để dùng lại luồng hiển thị bên dưới.
                 from agents import Orchestrator
-                res = await Orchestrator(websocket.send_json, send_log).run(img, req)
-                if res is None:
-                    return
-            else:
-                # Chế độ "Nhanh": SuperAgent 1 lần gọi AI (giữ nguyên)
+                try:
+                    res = await Orchestrator(websocket.send_json, send_log).run(img, req)
+                    if res is None:
+                        return
+                except WebSocketDisconnect:
+                    raise
+                except Exception as e:
+                    # Hết lượt API / quá thời gian / lỗi agent → chạy lại bằng SuperAgent để giáo viên vẫn có kết quả
+                    print(f"[FALLBACK] Chế độ sâu lỗi: {e!r} → SuperAgent")
+                    await send_log("Orchestrator", f"⚠️ Chế độ sâu gặp lỗi ({str(e)[:100]}) → chuyển sang chế độ dự phòng (SuperAgent)")
+                    fallback_used = True
+                    t_start = time.perf_counter()
+            if res is None:
+                # SuperAgent 1 lần gọi AI: chế độ dự phòng (hoặc khi gửi mode="fast", vd benchmark)
                 agent = SuperAgent()
                 res = await agent.process(img, send_log)
-                print(f"[TIMING] SuperAgent     {(time.perf_counter() - t_start) * 1000:7.0f} ms  | AI calls: 1 (chế độ Nhanh)")
+                print(f"[TIMING] SuperAgent     {(time.perf_counter() - t_start) * 1000:7.0f} ms  | AI calls: 1"
+                      f"{' (dự phòng)' if fallback_used else ''}")
             domain = res.get("domain", "general")
             core   = res.get("core", {})
             tutor  = res.get("tutor", {})
@@ -1372,6 +1385,7 @@ Output strictly valid JSON (no markdown, no backticks):
                 # Gửi toàn bộ kết quả 1 lần duy nhất
                 await websocket.send_json({
                     "type":         "result_chemistry",
+                    "fallback":     fallback_used,
                     "equation":     res.get("equation", ""),
                     "reactants":    reactants,
                     "products":     products,

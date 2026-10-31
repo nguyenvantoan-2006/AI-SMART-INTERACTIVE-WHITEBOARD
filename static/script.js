@@ -1166,8 +1166,8 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
     // SPEED OPT: Theo dõi widget hóa học hiện tại để patch pedagogy sau
     let lastChemWidgetId = null;
 
-    // Chế độ Nhanh / Phân tích sâu chỉ áp dụng cho Trực quan hóa
-    const mode = actionType === 'auto_analyze' ? getAnalyzeMode() : 'fast';
+    // Trực quan hóa luôn chạy Phân tích sâu (nhiều agent); server tự lùi về SuperAgent nếu lỗi
+    const mode = actionType === 'auto_analyze' ? 'deep' : 'fast';
     // Log agent đến trước khi có widget → giữ lại để hiện trong panel Phân tích sâu
     const pendingLogs = [];
 
@@ -1212,6 +1212,11 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
             if (data.deep_mode && lastChemWidgetId) {
                 // Đợt 1: phương trình + an toàn. Giữ ws mở chờ lời giảng & quiz
                 _attachDeepPanel(lastChemWidgetId, data);
+                pendingLogs.forEach(l => _deepPanelLog(lastChemWidgetId, l));
+            } else if (data.fallback && lastChemWidgetId) {
+                // Chế độ sâu lỗi → server đã chạy lại bằng SuperAgent: hiện nhật ký để giáo viên biết
+                ws.close();
+                _attachFallbackPanel(lastChemWidgetId);
                 pendingLogs.forEach(l => _deepPanelLog(lastChemWidgetId, l));
             } else {
                 // Single-pass: pedagogy đã có sẵn trong cùng 1 message → đóng ws ngay
@@ -1278,30 +1283,23 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
 }
 
 // ============================================================
-//  CHẾ ĐỘ PHÂN TÍCH: ⚡ Nhanh (SuperAgent) / 🔬 Phân tích sâu (nhiều agent)
+//  PHÂN TÍCH SÂU (nhiều agent) — panel gắn vào widget hóa học,
+//  hiện dần từng phần khi agent gửi về
 // ============================================================
-function getAnalyzeMode() {
-    try { return localStorage.getItem('analyzeMode') === 'deep' ? 'deep' : 'fast'; } catch { return 'fast'; }
+
+// Chế độ dự phòng (SuperAgent): chỉ có nhật ký, không có lời giảng/quiz
+function _attachFallbackPanel(wid) {
+    const widget = document.getElementById(wid);
+    if (!widget) return;
+    const panel = document.createElement('div');
+    panel.className = 'deep-panel';
+    panel.id = `${wid}-deep`;
+    panel.innerHTML = `
+        <div class="deep-head">🔬 Phân tích sâu <span class="deep-verify warn">⚠️ Đã chuyển sang chế độ dự phòng</span></div>
+        <details class="deep-log-box" open><summary>Nhật ký agent</summary><div class="deep-log"></div></details>`;
+    widget.appendChild(panel);
 }
 
-function setAnalyzeMode(mode) {
-    try { localStorage.setItem('analyzeMode', mode); } catch { /* bỏ qua */ }
-    const btn = document.getElementById('btn-analyze-mode');
-    if (!btn) return;
-    const deep = mode === 'deep';
-    btn.classList.toggle('deep', deep);
-    btn.innerHTML = deep ? '🔬<span class="btn-label">Phân tích sâu</span>' : '⚡<span class="btn-label">Nhanh</span>';
-    btn.title = deep
-        ? 'Phân tích sâu: nhiều agent kiểm chứng phương trình, kèm lời giảng và 3 câu quiz (bấm để đổi sang Nhanh)'
-        : 'Nhanh: 1 lần gọi AI (bấm để đổi sang Phân tích sâu)';
-}
-
-document.getElementById('btn-analyze-mode')?.addEventListener('click', () => {
-    setAnalyzeMode(getAnalyzeMode() === 'deep' ? 'fast' : 'deep');
-});
-setAnalyzeMode(getAnalyzeMode());
-
-// ── Panel Phân tích sâu gắn vào widget hóa học: hiện dần từng phần khi agent gửi về ──
 function _attachDeepPanel(wid, data) {
     const widget = document.getElementById(wid);
     if (!widget) return;

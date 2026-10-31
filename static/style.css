@@ -4581,10 +4581,6 @@ img.exlib-page { height: auto; }
 .exlib-retry { margin-top: 8px; padding: 5px 14px; border-radius: 8px; border: 1px solid #3b82f6; background: rgba(59,130,246,0.15); color: #93c5fd; font-weight: 600; cursor: pointer; }
 .exlib-retry:hover { background: #3b82f6; color: #fff; }
 
-/* ---- Chế độ Nhanh / Phân tích sâu ---- */
-.analyze-mode-btn { width: auto !important; padding: 0 10px !important; gap: 4px; font-size: 0.78rem !important; font-weight: 600; color: #fcd34d !important; border: 1px solid rgba(245,158,11,0.45) !important; }
-.analyze-mode-btn.deep { color: #c4b5fd !important; border-color: rgba(139,92,246,0.6) !important; background: rgba(139,92,246,0.15) !important; }
-
 /* ---- Panel Phân tích sâu trong widget hóa học ---- */
 .deep-panel { margin: 10px 14px 14px; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(139,92,246,0.35); background: rgba(139,92,246,0.08); color: var(--text); font-size: 0.85rem; display: flex; flex-direction: column; gap: 8px; }
 .deep-head { font-weight: 700; color: #c4b5fd; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
