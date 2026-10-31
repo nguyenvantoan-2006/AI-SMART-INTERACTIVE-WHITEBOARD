@@ -4208,22 +4208,94 @@ vrBtnDelete?.addEventListener('click', () => {
     stopVr();
 });
 
+// ============================================================
+//  ĐẶT CHỮ MỚI (Micro "ghi lên bảng", chèn khái niệm, công cụ chữ)
+//  Chữ đầu tiên ở góc trên-trái vùng nhìn thấy; lần sau xuống dòng dưới chữ vừa thêm;
+//  tránh nét vẽ/chữ/widget đang có; hết chỗ phía dưới → sang cột bên cạnh.
+// ============================================================
+const TEXT_PLACE_MARGIN = 24;   // cách mép vùng nhìn thấy
+const TEXT_PLACE_GAP    = 14;   // khoảng cách như xuống dòng giữa hai chữ
+let _lastAddedText = null;      // chữ thêm gần nhất (mất khi chuyển trang vì canvas nạp object mới)
+
+// Vùng canvas đang nhìn thấy trong khung cuộn trang (tọa độ canvas)
+function _visibleCanvasRect() {
+    const W = canvas.getWidth(), H = canvas.getHeight();
+    const cr = canvas.upperCanvasEl.getBoundingClientRect();
+    const sc = document.getElementById('page-scroller');
+    const vr = sc ? sc.getBoundingClientRect() : { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    const kx = W / (cr.width || W), ky = H / (cr.height || H);
+    const left   = Math.max(0, (Math.max(vr.left, 0) - cr.left) * kx);
+    const top    = Math.max(0, (Math.max(vr.top, 0) - cr.top) * ky);
+    const right  = Math.min(W, (Math.min(vr.right, window.innerWidth) - cr.left) * kx);
+    const bottom = Math.min(H, (Math.min(vr.bottom, window.innerHeight) - cr.top) * ky);
+    return (right - left > 100 && bottom - top > 60) ? { left, top, right, bottom } : { left: 0, top: 0, right: W, bottom: H };
+}
+
+// Hình chữ nhật đang chiếm chỗ: object trên canvas (+ widget DOM nếu withWidgets)
+function _occupiedRects(withWidgets) {
+    const rects = canvas.getObjects()
+        .filter(o => o.visible !== false)
+        .map(o => { const b = o.getBoundingRect(true, true); return { left: b.left, top: b.top, right: b.left + b.width, bottom: b.top + b.height }; });
+    if (withWidgets) {
+        const cr = canvas.upperCanvasEl.getBoundingClientRect();
+        const kx = canvas.getWidth() / (cr.width || 1), ky = canvas.getHeight() / (cr.height || 1);
+        document.querySelectorAll('.smart-widget').forEach(w => {
+            const r = w.getBoundingClientRect();
+            if (!r.width || !r.height) return;
+            rects.push({ left: (r.left - cr.left) * kx, top: (r.top - cr.top) * ky, right: (r.right - cr.left) * kx, bottom: (r.bottom - cr.top) * ky });
+        });
+    }
+    return rects;
+}
+
+// Tìm góc trên-trái cho khối w×h: cột của chữ vừa thêm (ngay bên dưới nó) → các cột bên phải → các cột từ mép trái
+function _findTextSlot(w, h, withWidgets) {
+    const V = _visibleCanvasRect(), M = TEXT_PLACE_MARGIN, G = TEXT_PLACE_GAP;
+    const obstacles = _occupiedRects(withWidgets);
+    const minX = V.left + M, maxX = V.right - M, minY = V.top + M, maxY = V.bottom - M;
+
+    const scanColumn = (x, yStart) => {
+        let y = Math.max(minY, yStart);
+        while (y + h <= maxY) {
+            const hits = obstacles.filter(o => x < o.right + G && x + w > o.left - G && y < o.bottom + G && y + h > o.top - G);
+            if (!hits.length) return { x, y };
+            y = Math.max(...hits.map(o => o.bottom)) + G;
+        }
+        return null;
+    };
+
+    const last = _lastAddedText && canvas.getObjects().includes(_lastAddedText) ? _lastAddedText.getBoundingRect(true, true) : null;
+    const startX = last ? Math.min(Math.max(minX, last.left), Math.max(minX, maxX - w)) : minX;
+    const step = w + 2 * G;
+    const columns = [];
+    for (let x = startX; x + w <= maxX; x += step) columns.push(x);
+    for (let x = minX; x + w <= maxX && x < startX - G; x += step) columns.push(x);
+
+    for (let i = 0; i < columns.length; i++) {
+        // Cột đầu: bắt đầu ngay dưới chữ vừa thêm; các cột khác: từ mép trên
+        const slot = scanColumn(columns[i], i === 0 && last ? last.top + last.height + G : minY);
+        if (slot) return slot;
+    }
+    return null;
+}
+
 function addTextToCanvas(text) {
-    const maxWidth = Math.min(500, canvasEl.clientWidth * 0.8);
+    const V = _visibleCanvasRect();
+    const maxWidth = Math.min(500, (V.right - V.left) * 0.8);
     const textFill = (typeof currentColor !== 'undefined' && currentColor && currentColor !== '#0a1628')
         ? currentColor
         : '#ffffff';
 
     const textObj = new fabric.Textbox(text, {
-        left: canvasEl.clientWidth / 2,
-        top: canvasEl.clientHeight / 2,
-        originX: 'center',
-        originY: 'center',
+        left: V.left + TEXT_PLACE_MARGIN,
+        top: V.top + TEXT_PLACE_MARGIN,
+        originX: 'left',
+        originY: 'top',
         fill: textFill,
         fontSize: 32,
         fontFamily: 'Inter, "Segoe UI", Arial, sans-serif',
         width: maxWidth,
-        textAlign: 'center',
+        textAlign: 'left',
         selectable: true,
         evented: true,
         padding: 14,
@@ -4238,9 +4310,27 @@ function addTextToCanvas(text) {
         hoverCursor: 'move',
         moveCursor: 'move'
     });
+    // Thu khung chữ vừa đúng nội dung (câu ngắn không chiếm cả 500px) để xếp được nhiều cột
+    textObj.set('width', Math.min(maxWidth, Math.ceil(textObj.calcTextWidth()) + 4));
+    textObj.initDimensions();
+
+    // Ưu tiên chỗ không bị widget che; hết chỗ thì chỉ tránh nét vẽ/chữ; vẫn hết thì đặt dưới chữ vừa thêm
+    const w = textObj.getScaledWidth(), h = textObj.getScaledHeight();
+    let slot = _findTextSlot(w, h, true) || _findTextSlot(w, h, false);
+    if (!slot) {
+        const last = _lastAddedText && canvas.getObjects().includes(_lastAddedText) ? _lastAddedText.getBoundingRect(true, true) : null;
+        slot = last
+            ? { x: last.left, y: Math.min(last.top + last.height + TEXT_PLACE_GAP, Math.max(V.top, V.bottom - h - TEXT_PLACE_MARGIN)) }
+            : { x: V.left + TEXT_PLACE_MARGIN, y: V.top + TEXT_PLACE_MARGIN };
+        showToast('Bảng đã kín chỗ — chữ mới có thể chồng lên nội dung cũ, hãy kéo ra chỗ khác.', 'warn');
+    }
+    textObj.set({ left: slot.x, top: slot.y });
+    textObj.setCoords();
+
     canvas.add(textObj);
     canvas.setActiveObject(textObj);
     canvas.renderAll();
+    _lastAddedText = textObj;
     saveState();
 }
 
