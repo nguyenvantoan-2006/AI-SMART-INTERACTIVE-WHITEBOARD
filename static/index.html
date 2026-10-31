@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=20261031_dictate">
+    <link rel="stylesheet" href="style.css?v=20261031_fontsize">
 </head>
 <body>
     <div class="app-layout" id="app-layout">
@@ -99,6 +99,7 @@
                 <button id="color-palette-btn" class="color-palette-btn" title="Bảng màu">
                     <span id="color-current-dot" class="color-current-dot" style="background:#ffffff"></span>
                 </button>
+                <button class="tool-btn font-size-btn" id="btn-font-size" title="Cỡ chữ (chữ đọc bằng Micro, làm đẹp chữ, thêm chữ)">Aa</button>
             </div>
 
 
@@ -217,6 +218,22 @@
         </div>
     </div>
 
+    <!-- Cỡ chữ (mở từ nút "Aa" ở thanh công cụ dưới) -->
+    <div id="font-size-pop" class="brush-size-pop font-size-pop hidden">
+        <div class="brush-pop-title">Cỡ chữ <b id="font-size-val">56</b></div>
+        <div class="font-size-presets">
+            <button type="button" class="font-size-preset" data-size="32">Nhỏ</button>
+            <button type="button" class="font-size-preset" data-size="44">Vừa</button>
+            <button type="button" class="font-size-preset" data-size="56">Lớn</button>
+            <button type="button" class="font-size-preset" data-size="72">Rất lớn</button>
+        </div>
+        <div class="font-size-step">
+            <button type="button" id="font-size-dec" title="Nhỏ hơn 4px">A−</button>
+            <button type="button" id="font-size-inc" title="Lớn hơn 4px">A+</button>
+        </div>
+        <div class="font-size-hint" id="font-size-hint"></div>
+    </div>
+
     <!-- Cỡ nét bút (mở bằng cách bấm đúp vào nút bút ở thanh công cụ dưới) -->
     <div id="brush-size-pop" class="brush-size-pop hidden">
         <div class="brush-pop-title">Cỡ nét <b id="brush-size-val">3</b></div>
@@ -315,11 +332,11 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/function-plot/1.23.0/function-plot.js"></script>
     <script src="chem_visuals.js?v=35"></script>
-    <script src="script.js?v=20261031_dictate"></script>
+    <script src="script.js?v=20261031_fontsize"></script>
     <script src="virtual_lab.js?v=7"></script>
     <script src="exercise_lib.js?v=5"></script>
     <!-- Page Manager: multi-page + OCR dedup + i18n (loads AFTER script.js) -->
-    <script src="page_manager.js?v=20261019_textmove2"></script>
+    <script src="page_manager.js?v=20261031_fontsize"></script>
     <script src="lesson_export.js?v=3"></script>
     <script src="calculator.js?v=3"></script>
     <!-- Hand Tracking Module -->

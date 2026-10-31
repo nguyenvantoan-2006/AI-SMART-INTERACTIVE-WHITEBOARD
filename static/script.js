@@ -533,6 +533,133 @@ document.addEventListener('pointerdown', (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleBrushPop(false); });
 window.addEventListener('resize', () => toggleBrushPop(false));
+
+// ---- CỠ CHỮ (nút "Aa"): chưa chọn chữ nào = cỡ cho chữ thêm mới; đang chọn chữ = đổi cỡ ngay các chữ đó ----
+const FONT_SIZE_KEY = 'boardFontSize';
+const FONT_SIZE_MIN = 20, FONT_SIZE_MAX = 120, FONT_SIZE_STEP = 4, FONT_SIZE_DEFAULT = 56;
+const TEXT_OBJ_TYPES = new Set(['textbox', 'i-text', 'text']);
+const clampFontSize = (v) => Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, Math.round(v)));
+let boardFontSize = (() => {
+    try {
+        const v = parseInt(localStorage.getItem(FONT_SIZE_KEY), 10);
+        return isNaN(v) ? FONT_SIZE_DEFAULT : clampFontSize(v);
+    } catch { return FONT_SIZE_DEFAULT; }
+})();
+function getBoardFontSize() { return boardFontSize; }
+window.getBoardFontSize = getBoardFontSize;   // page_manager.js (làm đẹp chữ) dùng
+
+// Chữ đang chọn: chữ được bấm chọn trên bảng, hoặc các chữ nằm trong vùng khoanh
+function getSelectedTextObjects() {
+    const active = canvas.getActiveObjects().filter(o => TEXT_OBJ_TYPES.has(o.type));
+    if (active.length) return active;
+    if (lastLassoCrop) return getObjectsInLasso(lastLassoCrop).filter(o => TEXT_OBJ_TYPES.has(o.type));
+    return [];
+}
+const effectiveFontSize = (o) => Math.round(o.fontSize * (o.scaleY || 1));
+
+// Khung chữ vừa nội dung theo cỡ chữ: dòng dài tối đa ~28 lần cỡ chữ (~50 ký tự) và không vượt mép phải bảng
+function fitTextboxWidth(obj, maxWidth) {
+    if (obj.type !== 'textbox') return;
+    obj.set('width', maxWidth);
+    obj.initDimensions();
+    obj.set('width', Math.min(maxWidth, Math.ceil(obj.calcTextWidth()) + 4));
+    obj.initDimensions();
+}
+
+function resizeTextObjects(objs, size) {
+    const act = canvas.getActiveObject();
+    if (act && act.type === 'activeSelection') canvas.discardActiveObject();   // tọa độ trong nhóm là tương đối
+    const before = objs.map(o => o.getBoundingRect(true, true));
+    objs.forEach(o => {
+        if (o.type === 'textbox') {
+            // Giữ nguyên chỗ xuống dòng: khung rộng ra cùng tỉ lệ với cỡ chữ (không vượt mép phải bảng)
+            const ratio = size / effectiveFontSize(o);
+            const maxW = Math.max(120, canvas.getWidth() - before[objs.indexOf(o)].left - TEXT_PLACE_MARGIN);
+            const newW = Math.min(maxW, o.width * (o.scaleX || 1) * ratio);
+            o.set({ fontSize: size, scaleX: 1, scaleY: 1, width: newW });
+            o.initDimensions();
+        } else {
+            o.set({ fontSize: size, scaleX: 1, scaleY: 1 });
+        }
+        o.setCoords();
+    });
+    // Các đoạn được chọn xếp chồng nhau: đoạn phía dưới dời theo phần cao thêm của các đoạn phía trên → không đè nhau
+    const after = objs.map(o => o.getBoundingRect(true, true));
+    objs.forEach((o, i) => {
+        const bi = before[i];
+        let shift = 0;
+        objs.forEach((_, j) => {
+            const bj = before[j];
+            const above = j !== i && bj.top + bj.height <= bi.top + 1;
+            const sameColumn = bj.left < bi.left + bi.width && bi.left < bj.left + bj.width;
+            if (above && sameColumn) shift += after[j].height - bj.height;
+        });
+        if (shift) { o.set('top', o.top + shift); o.setCoords(); }
+    });
+    canvas.requestRenderAll();
+    objs.forEach(o => canvas.fire('object:modified', { target: o }));   // lưu hoàn tác (saveState gộp thành 1 bước)
+}
+
+const fontBtn = document.getElementById('btn-font-size');
+const fontPop = document.getElementById('font-size-pop');
+
+function refreshFontPop() {
+    if (!fontPop || fontPop.classList.contains('hidden')) return;
+    const sel = getSelectedTextObjects();
+    const size = sel.length ? effectiveFontSize(sel[0]) : boardFontSize;
+    document.getElementById('font-size-val').textContent = size;
+    fontPop.querySelectorAll('.font-size-preset').forEach(b => b.classList.toggle('active', +b.dataset.size === size));
+    const hint = document.getElementById('font-size-hint');
+    if (sel.length) {
+        hint.innerHTML = `Đang đổi cỡ <b>${sel.length}</b> đoạn chữ đang chọn · <button type="button" class="font-size-unselect">Dùng cho chữ mới</button>`;
+        hint.querySelector('.font-size-unselect').addEventListener('click', () => {
+            canvas.discardActiveObject();
+            if (lastLassoCrop && typeof clearLasso === 'function') clearLasso();
+            canvas.requestRenderAll();
+            refreshFontPop();
+        });
+    } else {
+        hint.textContent = 'Áp dụng cho chữ thêm mới (Micro, làm đẹp chữ, thêm chữ)';
+    }
+}
+
+function applyFontSize(size) {
+    size = clampFontSize(size);
+    const sel = getSelectedTextObjects();
+    if (sel.length) {
+        resizeTextObjects(sel, size);
+    } else {
+        boardFontSize = size;
+        try { localStorage.setItem(FONT_SIZE_KEY, String(size)); } catch { /* bỏ qua */ }
+    }
+    refreshFontPop();
+}
+
+function toggleFontPop(show) {
+    if (!fontPop || !fontBtn) return;
+    const open = show ?? fontPop.classList.contains('hidden');
+    fontPop.classList.toggle('hidden', !open);
+    fontBtn.classList.toggle('pen-pop-open', open);
+    if (!open) return;
+    refreshFontPop();
+    const r = fontBtn.getBoundingClientRect();
+    const w = fontPop.offsetWidth, h = fontPop.offsetHeight;
+    fontPop.style.left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, window.innerWidth - w - 8)) + 'px';
+    fontPop.style.top = Math.max(8, r.top - h - 10) + 'px';
+}
+
+fontBtn?.addEventListener('click', (e) => { e.stopPropagation(); toggleFontPop(); });
+fontPop?.querySelectorAll('.font-size-preset').forEach(b => b.addEventListener('click', () => applyFontSize(+b.dataset.size)));
+document.getElementById('font-size-dec')?.addEventListener('click', () => applyFontSize(+document.getElementById('font-size-val').textContent - FONT_SIZE_STEP));
+document.getElementById('font-size-inc')?.addEventListener('click', () => applyFontSize(+document.getElementById('font-size-val').textContent + FONT_SIZE_STEP));
+['selection:created', 'selection:updated', 'selection:cleared'].forEach(ev => canvas.on(ev, refreshFontPop));
+document.addEventListener('pointerdown', (e) => {
+    if (!fontPop || fontPop.classList.contains('hidden')) return;
+    if (e.target.closest('#font-size-pop') || e.target.closest('#btn-font-size')) return;
+    toggleFontPop(false);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleFontPop(false); });
+window.addEventListener('resize', () => toggleFontPop(false));
 brushSize.addEventListener('input', updateBrushPreview);
 
 brushSize.addEventListener('input', () => {
@@ -1838,15 +1965,13 @@ function replaceWithBeautifulText(text) {
         window.addOCRTextObject(text, textX, textY, strokeWidth, strokeHeight, 0.96, toRemove);
     } else {
         toRemove.forEach(obj => canvas.remove(obj));
-        const textLen = Math.max(1, text.length);
-        let computedFontSize = Math.sqrt((strokeWidth * strokeHeight) / (0.5 * textLen)) * 0.8;
-        computedFontSize = Math.min(computedFontSize, strokeHeight * 0.9);
+        const fontSize = getBoardFontSize();
         const textObj = new fabric.Textbox(text, {
             left: textX,
             top: textY,
             width: Math.max(50, strokeWidth),
             fontFamily: 'Inter, "Segoe UI", Arial, sans-serif',
-            fontSize: Math.max(16, computedFontSize), 
+            fontSize,
             fill: currentColor,
             selectable: true,
             evented: true,
@@ -1862,6 +1987,7 @@ function replaceWithBeautifulText(text) {
             hoverCursor: 'move',
             moveCursor: 'move'
         });
+        fitTextboxWidth(textObj, Math.max(120, Math.min(fontSize * 28, canvas.getWidth() - textX - TEXT_PLACE_MARGIN)));
         canvas.add(textObj);
         canvas.setActiveObject(textObj);
         canvas.renderAll();
@@ -4360,11 +4486,11 @@ function _findTextSlot(w, h, withWidgets) {
 
 function addTextToCanvas(text) {
     const V = _visibleCanvasRect();
-    // Đoạn dài (đề bài đọc qua Micro): khung rộng hơn, chữ nhỏ hơn, tự xuống dòng theo chiều rộng khung
+    // Cỡ chữ theo nút "Aa"; khung rộng tối đa ~28 lần cỡ chữ (~50 ký tự/dòng) và không vượt vùng nhìn thấy,
+    // đoạn dài (đề bài đọc qua Micro) tự xuống dòng theo chiều rộng khung
+    const fontSize = getBoardFontSize();
     const isLong = text.length > 60 || text.includes('\n');
-    const maxWidth = isLong
-        ? Math.min(900, (V.right - V.left) - 2 * TEXT_PLACE_MARGIN)
-        : Math.min(500, (V.right - V.left) * 0.8);
+    const maxWidth = Math.max(120, Math.min(fontSize * 28, (V.right - V.left) - 2 * TEXT_PLACE_MARGIN));
     const textFill = (typeof currentColor !== 'undefined' && currentColor && currentColor !== '#0a1628')
         ? currentColor
         : '#ffffff';
@@ -4375,7 +4501,7 @@ function addTextToCanvas(text) {
         originX: 'left',
         originY: 'top',
         fill: textFill,
-        fontSize: isLong ? 26 : 32,
+        fontSize,
         lineHeight: isLong ? 1.3 : 1.16,
         fontFamily: 'Inter, "Segoe UI", Arial, sans-serif',
         width: maxWidth,
@@ -4394,9 +4520,8 @@ function addTextToCanvas(text) {
         hoverCursor: 'move',
         moveCursor: 'move'
     });
-    // Thu khung chữ vừa đúng nội dung (câu ngắn không chiếm cả 500px) để xếp được nhiều cột
-    textObj.set('width', Math.min(maxWidth, Math.ceil(textObj.calcTextWidth()) + 4));
-    textObj.initDimensions();
+    // Thu khung chữ vừa đúng nội dung (câu ngắn không chiếm cả khung) để xếp được nhiều cột
+    fitTextboxWidth(textObj, maxWidth);
 
     // Ưu tiên chỗ không bị widget che; hết chỗ thì chỉ tránh nét vẽ/chữ; vẫn hết thì đặt dưới chữ vừa thêm
     const w = textObj.getScaledWidth(), h = textObj.getScaledHeight();
