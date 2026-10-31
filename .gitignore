@@ -71,3 +71,4 @@ Thumbs.db
 
 # Kho bài tập giáo viên tải lên (dữ liệu riêng, không đẩy lên GitHub)
 exercises/
+benchmark_agents_result.json
