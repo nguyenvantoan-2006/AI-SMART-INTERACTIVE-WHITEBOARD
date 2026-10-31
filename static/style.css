@@ -4580,3 +4580,31 @@ img.exlib-page { height: auto; }
 
 .exlib-retry { margin-top: 8px; padding: 5px 14px; border-radius: 8px; border: 1px solid #3b82f6; background: rgba(59,130,246,0.15); color: #93c5fd; font-weight: 600; cursor: pointer; }
 .exlib-retry:hover { background: #3b82f6; color: #fff; }
+
+/* ---- Chế độ Nhanh / Phân tích sâu ---- */
+.analyze-mode-btn { width: auto !important; padding: 0 10px !important; gap: 4px; font-size: 0.78rem !important; font-weight: 600; color: #fcd34d !important; border: 1px solid rgba(245,158,11,0.45) !important; }
+.analyze-mode-btn.deep { color: #c4b5fd !important; border-color: rgba(139,92,246,0.6) !important; background: rgba(139,92,246,0.15) !important; }
+
+/* ---- Panel Phân tích sâu trong widget hóa học ---- */
+.deep-panel { margin: 10px 14px 14px; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(139,92,246,0.35); background: rgba(139,92,246,0.08); color: var(--text); font-size: 0.85rem; display: flex; flex-direction: column; gap: 8px; }
+.deep-head { font-weight: 700; color: #c4b5fd; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.deep-verify { font-weight: 500; font-size: 0.78rem; padding: 2px 8px; border-radius: 10px; }
+.deep-verify.ok { background: rgba(16,185,129,0.15); color: #6ee7b7; }
+.deep-verify.warn { background: rgba(245,158,11,0.15); color: #fcd34d; }
+.deep-written { color: var(--muted); font-size: 0.78rem; }
+.deep-masses { display: flex; flex-wrap: wrap; gap: 6px; }
+.deep-chip { display: inline-block; padding: 2px 8px; border-radius: 10px; background: rgba(59,130,246,0.15); color: #93c5fd; font-size: 0.75rem; }
+.deep-section { border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 8px; }
+.deep-item { margin: 3px 0; line-height: 1.45; }
+.deep-item.warn { color: #fca5a5; }
+.deep-lecture { margin-top: 6px; padding: 8px 10px; border-left: 3px solid #10b981; background: rgba(16,185,129,0.08); border-radius: 6px; line-height: 1.5; }
+.deep-loading { color: var(--muted); font-style: italic; }
+.deep-btn { margin-top: 6px; padding: 6px 14px; border-radius: 8px; border: 1px solid #8b5cf6; background: rgba(139,92,246,0.2); color: #ddd6fe; font-weight: 600; cursor: pointer; }
+.deep-btn:hover:not(:disabled) { background: #8b5cf6; color: #fff; }
+.deep-btn:disabled { opacity: 0.6; cursor: wait; }
+.deep-log-box summary { cursor: pointer; color: var(--muted); font-size: 0.78rem; }
+.deep-log { max-height: 160px; overflow-y: auto; font-family: 'Fira Code', monospace; font-size: 0.72rem; margin-top: 4px; }
+.deep-log-row { padding: 2px 0; color: #cbd5e1; }
+.deep-log-row b { color: #93c5fd; }
+.deep-log-row.exchange b { color: #fca5a5; }
+.deep-timing { color: var(--muted); font-size: 0.75rem; text-align: right; }

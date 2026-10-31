@@ -1166,9 +1166,14 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
     // SPEED OPT: Theo dõi widget hóa học hiện tại để patch pedagogy sau
     let lastChemWidgetId = null;
 
+    // Chế độ Nhanh / Phân tích sâu chỉ áp dụng cho Trực quan hóa
+    const mode = actionType === 'auto_analyze' ? getAnalyzeMode() : 'fast';
+    // Log agent đến trước khi có widget → giữ lại để hiện trong panel Phân tích sâu
+    const pendingLogs = [];
+
     ws.onopen = () => {
-        setLoading(true, 'AI đang phân tích...');
-        ws.send(JSON.stringify({ image: imageData, action: actionType, text: textData }));
+        setLoading(true, mode === 'deep' ? '🔬 Phân tích sâu: các agent đang làm việc...' : 'AI đang phân tích...');
+        ws.send(JSON.stringify({ image: imageData, action: actionType, text: textData, mode }));
     };
 
     ws.onmessage = (event) => {
@@ -1176,16 +1181,42 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
         try { data = JSON.parse(event.data); } catch { return; }
 
         if (data.type === 'log') {
-            if (data.message) setLoading(true, data.message);
+            if (mode === 'deep') {
+                pendingLogs.push(data);
+                if (lastChemWidgetId) _deepPanelLog(lastChemWidgetId, data);
+            }
+            if (data.message && !lastChemWidgetId) setLoading(true, data.message);
+            return;
+        }
+
+        // ── Chế độ Phân tích sâu: kết quả đến theo từng đợt ─────────
+        if (data.type === 'result_agent_tutor') {
+            if (lastChemWidgetId) _deepPanelTutor(lastChemWidgetId, data.pedagogy || {});
+            return;
+        } else if (data.type === 'result_agent_tts') {
+            if (lastChemWidgetId) _deepPanelTts(lastChemWidgetId, data.speech_script || '');
+            return;
+        } else if (data.type === 'result_agent_quiz') {
+            if (lastChemWidgetId) _deepPanelQuiz(lastChemWidgetId, data);
+            return;
+        } else if (data.type === 'agent_done') {
+            ws.close();
+            if (lastChemWidgetId) _deepPanelDone(lastChemWidgetId, data.timing || {});
             return;
         }
 
         // ── Xử lý từng loại message ──────────────────────────────
         if (data.type === 'result_chemistry') {
-            // Single-pass: pedagogy đã có sẵn trong cùng 1 message → đóng ws ngay
-            ws.close();
             setLoading(false);
             lastChemWidgetId = buildChemWidget(data);
+            if (data.deep_mode && lastChemWidgetId) {
+                // Đợt 1: phương trình + an toàn. Giữ ws mở chờ lời giảng & quiz
+                _attachDeepPanel(lastChemWidgetId, data);
+                pendingLogs.forEach(l => _deepPanelLog(lastChemWidgetId, l));
+            } else {
+                // Single-pass: pedagogy đã có sẵn trong cùng 1 message → đóng ws ngay
+                ws.close();
+            }
 
         } else if (data.type === 'result_chemistry_pedagogy') {
             // Legacy fallback: giữ lại phòng khi server cũ gửi 2 message
@@ -1244,6 +1275,125 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
     };
 
     ws.onclose = () => setLoading(false);
+}
+
+// ============================================================
+//  CHẾ ĐỘ PHÂN TÍCH: ⚡ Nhanh (SuperAgent) / 🔬 Phân tích sâu (nhiều agent)
+// ============================================================
+function getAnalyzeMode() {
+    try { return localStorage.getItem('analyzeMode') === 'deep' ? 'deep' : 'fast'; } catch { return 'fast'; }
+}
+
+function setAnalyzeMode(mode) {
+    try { localStorage.setItem('analyzeMode', mode); } catch { /* bỏ qua */ }
+    const btn = document.getElementById('btn-analyze-mode');
+    if (!btn) return;
+    const deep = mode === 'deep';
+    btn.classList.toggle('deep', deep);
+    btn.innerHTML = deep ? '🔬<span class="btn-label">Phân tích sâu</span>' : '⚡<span class="btn-label">Nhanh</span>';
+    btn.title = deep
+        ? 'Phân tích sâu: nhiều agent kiểm chứng phương trình, kèm lời giảng và 3 câu quiz (bấm để đổi sang Nhanh)'
+        : 'Nhanh: 1 lần gọi AI (bấm để đổi sang Phân tích sâu)';
+}
+
+document.getElementById('btn-analyze-mode')?.addEventListener('click', () => {
+    setAnalyzeMode(getAnalyzeMode() === 'deep' ? 'fast' : 'deep');
+});
+setAnalyzeMode(getAnalyzeMode());
+
+// ── Panel Phân tích sâu gắn vào widget hóa học: hiện dần từng phần khi agent gửi về ──
+function _attachDeepPanel(wid, data) {
+    const widget = document.getElementById(wid);
+    if (!widget) return;
+    const v = data.verification || {};
+    const verifyHtml = v.ok
+        ? `✅ VerifierAgent đã kiểm chứng${v.fix_rounds ? ` (sau ${v.fix_rounds} vòng sửa)` : ''}`
+        : `⚠️ Chưa kiểm chứng được: ${escHtml((v.errors || []).join('; '))}`;
+    const written = v.written ? `<div class="deep-written">Trên bảng: <code>${escHtml(v.written)}</code></div>` : '';
+    const masses = Object.entries(data.molar_masses || {})
+        .map(([f, m]) => `<span class="deep-chip">M(${renderFormulaHtml(f)}) = ${m}</span>`).join('');
+
+    const panel = document.createElement('div');
+    panel.className = 'deep-panel';
+    panel.id = `${wid}-deep`;
+    panel.innerHTML = `
+        <div class="deep-head">🔬 Phân tích sâu <span class="deep-verify ${v.ok ? 'ok' : 'warn'}">${verifyHtml}</span></div>
+        ${written}
+        ${masses ? `<div class="deep-masses">${masses}</div>` : ''}
+        <div class="deep-section deep-tutor"><div class="deep-loading">📚 TutorAgent đang soạn lời giảng...</div></div>
+        <div class="deep-section deep-quiz"><div class="deep-loading">🎯 QuizAgent đang ra câu hỏi...</div></div>
+        <details class="deep-log-box"><summary>Nhật ký agent</summary><div class="deep-log"></div></details>
+        <div class="deep-timing"></div>`;
+    widget.appendChild(panel);
+}
+
+function _deepPanelLog(wid, l) {
+    const box = document.querySelector(`#${wid}-deep .deep-log`);
+    if (!box) return;
+    const row = document.createElement('div');
+    row.className = 'deep-log-row' + (l.agent.includes('→') ? ' exchange' : '');
+    row.innerHTML = `<b>${escHtml(l.agent)}</b> ${escHtml(l.message || '')}`;
+    box.appendChild(row);
+}
+
+function _deepPanelTutor(wid, ped) {
+    const el = document.querySelector(`#${wid}-deep .deep-tutor`);
+    if (!el) return;
+    const item = (icon, label, txt) => txt ? `<div class="deep-item">${icon} <b>${label}:</b> ${escHtml(txt)}</div>` : '';
+    el.innerHTML = `
+        ${ped.reaction_type_label ? `<span class="deep-chip">${escHtml(ped.reaction_type_label)}</span>` : ''}
+        ${item('⚡', 'Bản chất', ped.mechanism)}
+        ${item('👀', 'Hiện tượng', ped.phenomenon)}
+        ${item('📚', 'Lý thuyết', ped.theory)}
+        ${item('🏭', 'Ứng dụng', ped.applications)}
+        ${item('📝', 'Lưu ý', ped.student_note)}
+        ${(ped.warnings || []).filter(Boolean).map(w => `<div class="deep-item warn">⚠️ ${escHtml(w)}</div>`).join('')}
+        ${ped.lecture ? `<div class="deep-lecture">${escHtml(ped.lecture)}</div>` : ''}
+        <button class="deep-btn deep-tts-btn" disabled>🔊 Đang tạo giọng đọc...</button>`;
+    el.style.animation = 'fadeInUp 0.4s ease';
+    el.dataset.lecture = ped.lecture || '';
+}
+
+function _deepPanelTts(wid, script) {
+    const el = document.querySelector(`#${wid}-deep .deep-tutor`);
+    const btn = el?.querySelector('.deep-tts-btn');
+    if (!btn) return;
+    const text = script || el.dataset.lecture;
+    if (!text) { btn.remove(); return; }
+    btn.disabled = false;
+    btn.textContent = '🔊 Nghe lời giảng';
+    btn.addEventListener('click', () => playTTS(text));
+}
+
+function _deepPanelQuiz(wid, data) {
+    const el = document.querySelector(`#${wid}-deep .deep-quiz`);
+    if (!el) return;
+    const qs = data.questions || [];
+    if (!qs.length) { el.innerHTML = '<div class="deep-item">🎯 QuizAgent chưa ra được câu hỏi.</div>'; return; }
+    el.innerHTML = `<button class="deep-btn">🎯 Làm ${qs.length} câu trắc nghiệm về phản ứng này</button>`;
+    el.style.animation = 'fadeInUp 0.4s ease';
+    el.querySelector('button').addEventListener('click', () => {
+        quizState.questions = qs;
+        quizState.topic = data.topic || 'Hóa học';
+        quizState.answers = {};
+        quizState.currentIdx = 0;
+        quizState.answered = false;
+        quizModal.classList.remove('hidden');
+        renderQuizQuestion();
+        quizShowScreen('quiz-question-screen');
+    });
+}
+
+function _deepPanelDone(wid, timing) {
+    const panel = document.getElementById(`${wid}-deep`);
+    if (!panel) return;
+    // Agent bị lỗi → không còn spinner treo
+    panel.querySelectorAll('.deep-loading').forEach(s => { s.textContent = '⚠️ Phần này chưa có kết quả.'; });
+    const marks = timing.marks || {};
+    const first = marks['Đợt 1 (phương trình)'];
+    panel.querySelector('.deep-timing').textContent =
+        `⏱ Phương trình: ${first != null ? (first / 1000).toFixed(1) + 's' : '—'} · ` +
+        `Hoàn tất: ${((timing.total_ms || 0) / 1000).toFixed(1)}s · ${timing.ai_calls || 0} lần gọi AI`;
 }
 
 /**
