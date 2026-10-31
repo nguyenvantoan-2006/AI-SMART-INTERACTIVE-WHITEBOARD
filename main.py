@@ -1297,8 +1297,20 @@ Output strictly valid JSON (no markdown, no backticks):
                 await websocket.send_json({"type": "result_general", "explanation": "Không nhận diện được chữ viết, vui lòng viết lại rõ hơn."})
                 
         elif action == "auto_analyze":
-            agent = SuperAgent()
-            res = await agent.process(img, send_log)
+            import time
+            t_start = time.perf_counter()
+            if req.get("mode") == "deep":
+                # Chế độ "Phân tích sâu": nhiều agent (agents.py). Hóa học → Orchestrator tự gửi kết quả theo đợt;
+                # domain khác → trả kết quả VisionAgent để dùng lại luồng hiển thị bên dưới.
+                from agents import Orchestrator
+                res = await Orchestrator(websocket.send_json, send_log).run(img, req)
+                if res is None:
+                    return
+            else:
+                # Chế độ "Nhanh": SuperAgent 1 lần gọi AI (giữ nguyên)
+                agent = SuperAgent()
+                res = await agent.process(img, send_log)
+                print(f"[TIMING] SuperAgent     {(time.perf_counter() - t_start) * 1000:7.0f} ms  | AI calls: 1 (chế độ Nhanh)")
             domain = res.get("domain", "general")
             core   = res.get("core", {})
             tutor  = res.get("tutor", {})
