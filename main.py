@@ -1213,7 +1213,16 @@ Trả về type "concept" chuẩn sư phạm THPT, trình bày chỉn chu, khoa 
   "reply": "<1 câu ngắn gọn 10-15 từ để AI phát âm thanh qua loa, vd: 'Đã mở bảng khái niệm chi tiết cho bạn trên màn hình.'>"
 }
 
-3. GENERAL QUESTIONS:
+3. YÊU CẦU RA BÀI TẬP / CÂU HỎI / ĐỀ KIỂM TRA:
+Khi người dùng muốn có bài tập để học sinh làm: "cho tôi bài tập...", "ra đề...", "tạo câu hỏi...", "cho mấy câu trắc nghiệm...", "kiểm tra 15 phút về...":
+TUYỆT ĐỐI KHÔNG tự viết câu hỏi hay đáp án ở đây. Chỉ trả về yêu cầu để hệ thống mở cửa sổ Bài tập:
+{"type": "quiz", "topic": "<chủ đề cụ thể, vd: CO₂ tác dụng với nước>", "num_questions": <số câu người dùng nói, mặc định 5>,
+ "question_type": "<mcq | essay | mixed — 'trắc nghiệm' → mcq, 'tự luận' → essay, cả hai → mixed, không nói → mcq>",
+ "level": "<nhan_biet | thong_hieu | van_dung | van_dung_cao | mixed — 'dễ' → nhan_biet, 'khó' → van_dung_cao, không nói → mixed>",
+ "reply": "Đang tạo bài tập"}
+Nếu người dùng nói "bài tập này", "phần này" mà không nêu chủ đề → lấy chủ đề từ nội dung trên ảnh bảng.
+
+4. GENERAL QUESTIONS:
 Nếu là câu hỏi thông thường khác:
 {"type": "answer", "title": "<Tiêu đề câu hỏi>", "reply": "<Câu trả lời súc tích>", "explanation": "<Nội dung giải thích chi tiết, gạch đầu dòng rõ ràng>"}
 
@@ -1267,6 +1276,50 @@ async def dictate_to_board_text(raw: str) -> str:
         print(f"[Dictate] Bỏ kết quả AI ({n_in} → {n_out} từ), dùng nguyên lời đọc")
         return raw
     return text
+
+
+async def generate_quiz(source, num_questions: int, q_type: str, level: str):
+    """Tạo bài tập theo GDPT 2018. source: ảnh phần khoanh vùng (dict mime/data) hoặc chủ đề giáo viên nói (str).
+    SPEED: chia đề thành nhiều phần (~3 câu) và gọi AI SONG SONG — thời gian chờ gần như không tăng theo số câu.
+    Trả về (topic, questions) — questions đã chuẩn hóa (mcq có đáp án hợp lệ, còn lại là essay)."""
+    chunks = _quiz_chunks(_quiz_plan(num_questions, q_type, level))
+
+    async def gen_chunk(i, chunk):
+        kind = {"mcq": 'TRẮC NGHIỆM ("type": "mcq")', "essay": 'TỰ LUẬN ("type": "essay")'}
+        lines = "\n".join(f'- Câu {k + 1}: {kind[t]}, mức {QUIZ_LEVEL_LABEL[lv]} ("level": "{lv}")'
+                          for k, (t, lv) in enumerate(chunk["plan"]))
+        focus = (f"\nĐây là phần {i + 1}/{len(chunks)} của một đề (các phần khác soạn riêng). Để KHÔNG TRÙNG câu với phần khác, "
+                 f"phần này TẬP TRUNG vào: {chunk['focus']}.") if len(chunks) > 1 else ""
+        ask = f"Tạo ĐÚNG {len(chunk['plan'])} câu theo bảng sau:\n{lines}{focus}"
+        if isinstance(source, str):
+            prompt = [f"KHÔNG có ảnh. Giáo viên yêu cầu bằng lời ra bài tập về chủ đề: {source}\n"
+                      f"(Thay quy tắc 'nội dung trong ảnh' bằng đúng chủ đề này.) {ask}"]
+        else:
+            prompt = [f"Đây là phần nội dung giáo viên đã khoanh vùng trên bảng. {ask}", source]
+        try:
+            res = await call_llm(prompt, QUIZ_SYSTEM_PROMPT, hedge_delay=3.0, total_timeout=14.0)
+        except Exception as e:
+            print(f"[QUIZ] Phần {i + 1} lỗi: {e}")
+            return {}
+        return res if isinstance(res, dict) else {}
+
+    results = await asyncio.gather(*(gen_chunk(i, c) for i, c in enumerate(chunks)))
+    questions, topic = [], ""
+    for res in results:
+        topic = topic or res.get("topic", "")
+        for q in res.get("questions", []) or []:
+            if not isinstance(q, dict) or not q.get("question"):
+                continue
+            opts = q.get("options")
+            if isinstance(opts, dict) and len(opts) >= 2 and str(q.get("answer", "")).upper() in opts:
+                q["type"] = "mcq"
+                q["answer"] = str(q["answer"]).upper()
+            else:
+                q["type"] = "essay"
+                q["solution"] = q.get("solution") or q.get("explanation") or ""
+            q["id"] = len(questions) + 1
+            questions.append(q)
+    return topic, questions
 
 
 # --- WORKFLOW ---
@@ -1483,7 +1536,20 @@ Output strictly valid JSON (no markdown, no backticks):
             text = req.get("text", "")
             agent = VoiceAssistantAgent()
             res = await agent.process(text, img, send_log)
-            if isinstance(res, dict) and res.get("explanation"):
+            if isinstance(res, dict) and res.get("type") == "quiz":
+                # "Cho tôi bài tập..." → mở cửa sổ Bài tập (đáp án ẩn đến khi chọn), không giải sẵn, không lời giảng
+                try:
+                    num = max(1, min(20, int(res.get("num_questions") or 5)))
+                except (TypeError, ValueError):
+                    num = 5
+                q_type = res.get("question_type") if res.get("question_type") in QUIZ_TYPE_RULES else "mcq"
+                level = res.get("level") if res.get("level") in QUIZ_LEVEL_RULES else "mixed"
+                topic_req = (res.get("topic") or text).strip()
+                await send_log("QuizAgent", f"🎯 Đang tạo {num} câu {QUIZ_TYPE_NAMES[q_type]} về: {topic_req[:60]}...")
+                topic, questions = await generate_quiz(topic_req, num, q_type, level)
+                res = {"type": "quiz", "topic": topic or topic_req, "questions": questions,
+                       "reply": f"Đã tạo {len(questions)} câu bài tập" if questions else "Chưa tạo được bài tập, thầy/cô thử nói rõ chủ đề hơn nhé."}
+            elif isinstance(res, dict) and res.get("explanation"):
                 try:
                     from chem_tts_module import generate_speech_script
                     await send_log("VoiceAgent", "🎙️ Đang tạo lời giảng sư phạm...")
@@ -1529,43 +1595,7 @@ Output strictly valid JSON (no markdown, no backticks):
             SuperAgent().preprocess_image(img).save(img_buffer, format="JPEG", quality=90)
             img_part = {"mime_type": "image/jpeg", "data": img_buffer.getvalue()}
 
-            chunks = _quiz_chunks(_quiz_plan(num_questions, q_type, level))
-            sys_instr = QUIZ_SYSTEM_PROMPT
-
-            async def gen_chunk(i, chunk):
-                kind = {"mcq": 'TRẮC NGHIỆM ("type": "mcq")', "essay": 'TỰ LUẬN ("type": "essay")'}
-                lines = "\n".join(f'- Câu {k + 1}: {kind[t]}, mức {QUIZ_LEVEL_LABEL[lv]} ("level": "{lv}")'
-                                  for k, (t, lv) in enumerate(chunk["plan"]))
-                focus = (f"\nĐây là phần {i + 1}/{len(chunks)} của một đề (các phần khác soạn riêng). Để KHÔNG TRÙNG câu với phần khác, "
-                         f"phần này TẬP TRUNG vào: {chunk['focus']}.") if len(chunks) > 1 else ""
-                prompt = [
-                    f"Đây là phần nội dung giáo viên đã khoanh vùng trên bảng. Tạo ĐÚNG {len(chunk['plan'])} câu theo bảng sau:\n{lines}{focus}",
-                    img_part,
-                ]
-                n = len(chunk["plan"])
-                try:
-                    res = await call_llm(prompt, sys_instr, hedge_delay=3.0, total_timeout=14.0)
-                except Exception as e:
-                    print(f"[QUIZ] Phần {i + 1} lỗi: {e}")
-                    return {}
-                return res if isinstance(res, dict) else {}
-
-            results = await asyncio.gather(*(gen_chunk(i, c) for i, c in enumerate(chunks)))
-            questions, topic = [], ""
-            for res in results:
-                topic = topic or res.get("topic", "")
-                for q in res.get("questions", []) or []:
-                    if not isinstance(q, dict) or not q.get("question"):
-                        continue
-                    opts = q.get("options")
-                    if isinstance(opts, dict) and len(opts) >= 2 and str(q.get("answer", "")).upper() in opts:
-                        q["type"] = "mcq"
-                        q["answer"] = str(q["answer"]).upper()
-                    else:
-                        q["type"] = "essay"
-                        q["solution"] = q.get("solution") or q.get("explanation") or ""
-                    q["id"] = len(questions) + 1
-                    questions.append(q)
+            topic, questions = await generate_quiz(img_part, num_questions, q_type, level)
             if not questions:
                 await websocket.send_json({"type": "error", "message": "Phần khoanh vùng trống hoặc chữ quá mờ. Hãy viết rõ nội dung hóa học và thử lại!"})
             else:

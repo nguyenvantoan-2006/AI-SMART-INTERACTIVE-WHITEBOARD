@@ -1526,16 +1526,19 @@ function _deepPanelQuiz(wid, data) {
     if (!qs.length) { el.innerHTML = '<div class="deep-item">🎯 QuizAgent chưa ra được câu hỏi.</div>'; return; }
     el.innerHTML = `<button class="deep-btn">🎯 Làm ${qs.length} câu trắc nghiệm về phản ứng này</button>`;
     el.style.animation = 'fadeInUp 0.4s ease';
-    el.querySelector('button').addEventListener('click', () => {
-        quizState.questions = qs;
-        quizState.topic = data.topic || 'Hóa học';
-        quizState.answers = {};
-        quizState.currentIdx = 0;
-        quizState.answered = false;
-        quizModal.classList.remove('hidden');
-        renderQuizQuestion();
-        quizShowScreen('quiz-question-screen');
-    });
+    el.querySelector('button').addEventListener('click', () => openQuizWithQuestions(qs, data.topic));
+}
+
+// Mở cửa sổ Bài tập với bộ câu hỏi có sẵn (QuizAgent của Phân tích sâu, lệnh giọng nói "cho tôi bài tập")
+function openQuizWithQuestions(questions, topic) {
+    quizState.questions = questions;
+    quizState.topic = topic || 'Hóa học';
+    quizState.answers = {};
+    quizState.currentIdx = 0;
+    quizState.answered = false;
+    quizModal.classList.remove('hidden');
+    renderQuizQuestion();
+    quizShowScreen('quiz-question-screen');
 }
 
 function _deepPanelDone(wid, timing) {
@@ -1869,6 +1872,13 @@ function handleVoiceAgentResult(res) {
             } else {
                 showToast('Không có văn bản nào trên bảng để đọc!', 'warn');
             }
+        }
+    } else if (res.type === 'quiz') {
+        // "Cho tôi bài tập..." → cửa sổ Bài tập: đáp án ẩn đến khi học sinh chọn, không có lời giảng/nghe giảng
+        if ((res.questions || []).length) {
+            openQuizWithQuestions(res.questions, res.topic);
+        } else {
+            showToast(res.reply || 'Chưa tạo được bài tập, thầy/cô thử nói rõ chủ đề hơn nhé.', 'warn');
         }
     } else if (res.type === 'concept') {
         buildConceptWidget(res);
