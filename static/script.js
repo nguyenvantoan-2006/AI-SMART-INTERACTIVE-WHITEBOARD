@@ -533,6 +533,133 @@ document.addEventListener('pointerdown', (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleBrushPop(false); });
 window.addEventListener('resize', () => toggleBrushPop(false));
+
+// ---- CỠ CHỮ (nút "Aa"): chưa chọn chữ nào = cỡ cho chữ thêm mới; đang chọn chữ = đổi cỡ ngay các chữ đó ----
+const FONT_SIZE_KEY = 'boardFontSize';
+const FONT_SIZE_MIN = 20, FONT_SIZE_MAX = 120, FONT_SIZE_STEP = 4, FONT_SIZE_DEFAULT = 56;
+const TEXT_OBJ_TYPES = new Set(['textbox', 'i-text', 'text']);
+const clampFontSize = (v) => Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, Math.round(v)));
+let boardFontSize = (() => {
+    try {
+        const v = parseInt(localStorage.getItem(FONT_SIZE_KEY), 10);
+        return isNaN(v) ? FONT_SIZE_DEFAULT : clampFontSize(v);
+    } catch { return FONT_SIZE_DEFAULT; }
+})();
+function getBoardFontSize() { return boardFontSize; }
+window.getBoardFontSize = getBoardFontSize;   // page_manager.js (làm đẹp chữ) dùng
+
+// Chữ đang chọn: chữ được bấm chọn trên bảng, hoặc các chữ nằm trong vùng khoanh
+function getSelectedTextObjects() {
+    const active = canvas.getActiveObjects().filter(o => TEXT_OBJ_TYPES.has(o.type));
+    if (active.length) return active;
+    if (lastLassoCrop) return getObjectsInLasso(lastLassoCrop).filter(o => TEXT_OBJ_TYPES.has(o.type));
+    return [];
+}
+const effectiveFontSize = (o) => Math.round(o.fontSize * (o.scaleY || 1));
+
+// Khung chữ vừa nội dung theo cỡ chữ: dòng dài tối đa ~28 lần cỡ chữ (~50 ký tự) và không vượt mép phải bảng
+function fitTextboxWidth(obj, maxWidth) {
+    if (obj.type !== 'textbox') return;
+    obj.set('width', maxWidth);
+    obj.initDimensions();
+    obj.set('width', Math.min(maxWidth, Math.ceil(obj.calcTextWidth()) + 4));
+    obj.initDimensions();
+}
+
+function resizeTextObjects(objs, size) {
+    const act = canvas.getActiveObject();
+    if (act && act.type === 'activeSelection') canvas.discardActiveObject();   // tọa độ trong nhóm là tương đối
+    const before = objs.map(o => o.getBoundingRect(true, true));
+    objs.forEach(o => {
+        if (o.type === 'textbox') {
+            // Giữ nguyên chỗ xuống dòng: khung rộng ra cùng tỉ lệ với cỡ chữ (không vượt mép phải bảng)
+            const ratio = size / effectiveFontSize(o);
+            const maxW = Math.max(120, canvas.getWidth() - before[objs.indexOf(o)].left - TEXT_PLACE_MARGIN);
+            const newW = Math.min(maxW, o.width * (o.scaleX || 1) * ratio);
+            o.set({ fontSize: size, scaleX: 1, scaleY: 1, width: newW });
+            o.initDimensions();
+        } else {
+            o.set({ fontSize: size, scaleX: 1, scaleY: 1 });
+        }
+        o.setCoords();
+    });
+    // Các đoạn được chọn xếp chồng nhau: đoạn phía dưới dời theo phần cao thêm của các đoạn phía trên → không đè nhau
+    const after = objs.map(o => o.getBoundingRect(true, true));
+    objs.forEach((o, i) => {
+        const bi = before[i];
+        let shift = 0;
+        objs.forEach((_, j) => {
+            const bj = before[j];
+            const above = j !== i && bj.top + bj.height <= bi.top + 1;
+            const sameColumn = bj.left < bi.left + bi.width && bi.left < bj.left + bj.width;
+            if (above && sameColumn) shift += after[j].height - bj.height;
+        });
+        if (shift) { o.set('top', o.top + shift); o.setCoords(); }
+    });
+    canvas.requestRenderAll();
+    objs.forEach(o => canvas.fire('object:modified', { target: o }));   // lưu hoàn tác (saveState gộp thành 1 bước)
+}
+
+const fontBtn = document.getElementById('btn-font-size');
+const fontPop = document.getElementById('font-size-pop');
+
+function refreshFontPop() {
+    if (!fontPop || fontPop.classList.contains('hidden')) return;
+    const sel = getSelectedTextObjects();
+    const size = sel.length ? effectiveFontSize(sel[0]) : boardFontSize;
+    document.getElementById('font-size-val').textContent = size;
+    fontPop.querySelectorAll('.font-size-preset').forEach(b => b.classList.toggle('active', +b.dataset.size === size));
+    const hint = document.getElementById('font-size-hint');
+    if (sel.length) {
+        hint.innerHTML = `Đang đổi cỡ <b>${sel.length}</b> đoạn chữ đang chọn · <button type="button" class="font-size-unselect">Dùng cho chữ mới</button>`;
+        hint.querySelector('.font-size-unselect').addEventListener('click', () => {
+            canvas.discardActiveObject();
+            if (lastLassoCrop && typeof clearLasso === 'function') clearLasso();
+            canvas.requestRenderAll();
+            refreshFontPop();
+        });
+    } else {
+        hint.textContent = 'Áp dụng cho chữ thêm mới (Micro, làm đẹp chữ, thêm chữ)';
+    }
+}
+
+function applyFontSize(size) {
+    size = clampFontSize(size);
+    const sel = getSelectedTextObjects();
+    if (sel.length) {
+        resizeTextObjects(sel, size);
+    } else {
+        boardFontSize = size;
+        try { localStorage.setItem(FONT_SIZE_KEY, String(size)); } catch { /* bỏ qua */ }
+    }
+    refreshFontPop();
+}
+
+function toggleFontPop(show) {
+    if (!fontPop || !fontBtn) return;
+    const open = show ?? fontPop.classList.contains('hidden');
+    fontPop.classList.toggle('hidden', !open);
+    fontBtn.classList.toggle('pen-pop-open', open);
+    if (!open) return;
+    refreshFontPop();
+    const r = fontBtn.getBoundingClientRect();
+    const w = fontPop.offsetWidth, h = fontPop.offsetHeight;
+    fontPop.style.left = Math.max(8, Math.min(r.left + r.width / 2 - w / 2, window.innerWidth - w - 8)) + 'px';
+    fontPop.style.top = Math.max(8, r.top - h - 10) + 'px';
+}
+
+fontBtn?.addEventListener('click', (e) => { e.stopPropagation(); toggleFontPop(); });
+fontPop?.querySelectorAll('.font-size-preset').forEach(b => b.addEventListener('click', () => applyFontSize(+b.dataset.size)));
+document.getElementById('font-size-dec')?.addEventListener('click', () => applyFontSize(+document.getElementById('font-size-val').textContent - FONT_SIZE_STEP));
+document.getElementById('font-size-inc')?.addEventListener('click', () => applyFontSize(+document.getElementById('font-size-val').textContent + FONT_SIZE_STEP));
+['selection:created', 'selection:updated', 'selection:cleared'].forEach(ev => canvas.on(ev, refreshFontPop));
+document.addEventListener('pointerdown', (e) => {
+    if (!fontPop || fontPop.classList.contains('hidden')) return;
+    if (e.target.closest('#font-size-pop') || e.target.closest('#btn-font-size')) return;
+    toggleFontPop(false);
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleFontPop(false); });
+window.addEventListener('resize', () => toggleFontPop(false));
 brushSize.addEventListener('input', updateBrushPreview);
 
 brushSize.addEventListener('input', () => {
@@ -974,6 +1101,35 @@ function localVoiceCommand(text) {
 // Câu nói có nhắc tới nội dung TRÊN BẢNG (xóa phần…, đổi màu chữ…) thì AI mới cần xem ảnh bảng
 const VOICE_NEEDS_BOARD = /xóa|xoá|tô|màu|đọc|bảng|cái này|chỗ này|phần này|bài này|trên đây|ở trên|ở dưới|viết|chữ/;
 
+// ---- Micro chế độ "Ghi lên bảng": chép nguyên văn lời đọc (AI chỉ chuẩn hóa công thức + dấu câu) ----
+function sendDictateToAI(fullText) {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/analyze`);
+    let done = false;
+    // Lỗi kết nối/AI → vẫn ghi lời đọc gốc lên bảng, không để mất nội dung
+    const finish = (text) => {
+        if (done) return;
+        done = true;
+        setLoading(false);
+        addTextToCanvas(text || fullText);
+    };
+
+    ws.onopen = () => {
+        setLoading(true, '📝 Đang chép lời đọc lên bảng...');
+        ws.send(JSON.stringify({ text: fullText, action: 'voice_dictate' }));
+    };
+    ws.onmessage = (event) => {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'result_dictate') {
+            ws.close();
+            finish(data.text);
+        }
+    };
+    ws.onerror = () => finish(fullText);
+    ws.onclose = () => finish(fullText);
+}
+
 // ---- Hàm dùng chung cho Voice Agent (thay thế duplicate code) ----
 function sendVoiceToAI(fullText) {
     const local = localVoiceCommand(fullText);
@@ -1166,9 +1322,14 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
     // SPEED OPT: Theo dõi widget hóa học hiện tại để patch pedagogy sau
     let lastChemWidgetId = null;
 
+    // Trực quan hóa luôn chạy Phân tích sâu (nhiều agent); server tự lùi về SuperAgent nếu lỗi
+    const mode = actionType === 'auto_analyze' ? 'deep' : 'fast';
+    // Log agent đến trước khi có widget → giữ lại để hiện trong panel Phân tích sâu
+    const pendingLogs = [];
+
     ws.onopen = () => {
-        setLoading(true, 'AI đang phân tích...');
-        ws.send(JSON.stringify({ image: imageData, action: actionType, text: textData }));
+        setLoading(true, mode === 'deep' ? '🔬 Phân tích sâu: các agent đang làm việc...' : 'AI đang phân tích...');
+        ws.send(JSON.stringify({ image: imageData, action: actionType, text: textData, mode }));
     };
 
     ws.onmessage = (event) => {
@@ -1176,16 +1337,47 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
         try { data = JSON.parse(event.data); } catch { return; }
 
         if (data.type === 'log') {
-            if (data.message) setLoading(true, data.message);
+            if (mode === 'deep') {
+                pendingLogs.push(data);
+                if (lastChemWidgetId) _deepPanelLog(lastChemWidgetId, data);
+            }
+            if (data.message && !lastChemWidgetId) setLoading(true, data.message);
+            return;
+        }
+
+        // ── Chế độ Phân tích sâu: kết quả đến theo từng đợt ─────────
+        if (data.type === 'result_agent_tutor') {
+            if (lastChemWidgetId) _deepPanelTutor(lastChemWidgetId, data.pedagogy || {});
+            return;
+        } else if (data.type === 'result_agent_tts') {
+            if (lastChemWidgetId) _deepPanelTts(lastChemWidgetId, data.speech_script || '');
+            return;
+        } else if (data.type === 'result_agent_quiz') {
+            if (lastChemWidgetId) _deepPanelQuiz(lastChemWidgetId, data);
+            return;
+        } else if (data.type === 'agent_done') {
+            ws.close();
+            if (lastChemWidgetId) _deepPanelDone(lastChemWidgetId, data.timing || {});
             return;
         }
 
         // ── Xử lý từng loại message ──────────────────────────────
         if (data.type === 'result_chemistry') {
-            // Single-pass: pedagogy đã có sẵn trong cùng 1 message → đóng ws ngay
-            ws.close();
             setLoading(false);
             lastChemWidgetId = buildChemWidget(data);
+            if (data.deep_mode && lastChemWidgetId) {
+                // Đợt 1: phương trình + an toàn. Giữ ws mở chờ lời giảng & quiz
+                _attachDeepPanel(lastChemWidgetId, data);
+                pendingLogs.forEach(l => _deepPanelLog(lastChemWidgetId, l));
+            } else if (data.fallback && lastChemWidgetId) {
+                // Chế độ sâu lỗi → server đã chạy lại bằng SuperAgent: hiện nhật ký để giáo viên biết
+                ws.close();
+                _attachFallbackPanel(lastChemWidgetId);
+                pendingLogs.forEach(l => _deepPanelLog(lastChemWidgetId, l));
+            } else {
+                // Single-pass: pedagogy đã có sẵn trong cùng 1 message → đóng ws ngay
+                ws.close();
+            }
 
         } else if (data.type === 'result_chemistry_pedagogy') {
             // Legacy fallback: giữ lại phòng khi server cũ gửi 2 message
@@ -1244,6 +1436,121 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
     };
 
     ws.onclose = () => setLoading(false);
+}
+
+// ============================================================
+//  PHÂN TÍCH SÂU (nhiều agent) — panel gắn vào widget hóa học,
+//  hiện dần từng phần khi agent gửi về
+// ============================================================
+
+// Chế độ dự phòng (SuperAgent): chỉ có nhật ký, không có lời giảng/quiz
+function _attachFallbackPanel(wid) {
+    const widget = document.getElementById(wid);
+    if (!widget) return;
+    const panel = document.createElement('div');
+    panel.className = 'deep-panel';
+    panel.id = `${wid}-deep`;
+    panel.innerHTML = `
+        <div class="deep-head">🔬 Phân tích sâu <span class="deep-verify warn">⚠️ Đã chuyển sang chế độ dự phòng</span></div>
+        <details class="deep-log-box" open><summary>Nhật ký agent</summary><div class="deep-log"></div></details>`;
+    widget.appendChild(panel);
+}
+
+function _attachDeepPanel(wid, data) {
+    const widget = document.getElementById(wid);
+    if (!widget) return;
+    const v = data.verification || {};
+    const verifyHtml = v.ok
+        ? `✅ VerifierAgent đã kiểm chứng${v.fix_rounds ? ` (sau ${v.fix_rounds} vòng sửa)` : ''}`
+        : `⚠️ Chưa kiểm chứng được: ${escHtml((v.errors || []).join('; '))}`;
+    const written = v.written ? `<div class="deep-written">Trên bảng: <code>${escHtml(v.written)}</code></div>` : '';
+    const masses = Object.entries(data.molar_masses || {})
+        .map(([f, m]) => `<span class="deep-chip">M(${renderFormulaHtml(f)}) = ${m}</span>`).join('');
+
+    const panel = document.createElement('div');
+    panel.className = 'deep-panel';
+    panel.id = `${wid}-deep`;
+    panel.innerHTML = `
+        <div class="deep-head">🔬 Phân tích sâu <span class="deep-verify ${v.ok ? 'ok' : 'warn'}">${verifyHtml}</span></div>
+        ${written}
+        ${masses ? `<div class="deep-masses">${masses}</div>` : ''}
+        <div class="deep-section deep-tutor"><div class="deep-loading">📚 TutorAgent đang soạn lời giảng...</div></div>
+        <div class="deep-section deep-quiz"><div class="deep-loading">🎯 QuizAgent đang ra câu hỏi...</div></div>
+        <details class="deep-log-box"><summary>Nhật ký agent</summary><div class="deep-log"></div></details>
+        <div class="deep-timing"></div>`;
+    widget.appendChild(panel);
+}
+
+function _deepPanelLog(wid, l) {
+    const box = document.querySelector(`#${wid}-deep .deep-log`);
+    if (!box) return;
+    const row = document.createElement('div');
+    row.className = 'deep-log-row' + (l.agent.includes('→') ? ' exchange' : '');
+    row.innerHTML = `<b>${escHtml(l.agent)}</b> ${escHtml(l.message || '')}`;
+    box.appendChild(row);
+}
+
+function _deepPanelTutor(wid, ped) {
+    const el = document.querySelector(`#${wid}-deep .deep-tutor`);
+    if (!el) return;
+    const item = (icon, label, txt) => txt ? `<div class="deep-item">${icon} <b>${label}:</b> ${escHtml(txt)}</div>` : '';
+    el.innerHTML = `
+        ${ped.reaction_type_label ? `<span class="deep-chip">${escHtml(ped.reaction_type_label)}</span>` : ''}
+        ${item('⚡', 'Bản chất', ped.mechanism)}
+        ${item('👀', 'Hiện tượng', ped.phenomenon)}
+        ${item('📚', 'Lý thuyết', ped.theory)}
+        ${item('🏭', 'Ứng dụng', ped.applications)}
+        ${item('📝', 'Lưu ý', ped.student_note)}
+        ${(ped.warnings || []).filter(Boolean).map(w => `<div class="deep-item warn">⚠️ ${escHtml(w)}</div>`).join('')}
+        ${ped.lecture ? `<div class="deep-lecture">${escHtml(ped.lecture)}</div>` : ''}
+        <button class="deep-btn deep-tts-btn" disabled>🔊 Đang tạo giọng đọc...</button>`;
+    el.style.animation = 'fadeInUp 0.4s ease';
+    el.dataset.lecture = ped.lecture || '';
+}
+
+function _deepPanelTts(wid, script) {
+    const el = document.querySelector(`#${wid}-deep .deep-tutor`);
+    const btn = el?.querySelector('.deep-tts-btn');
+    if (!btn) return;
+    const text = script || el.dataset.lecture;
+    if (!text) { btn.remove(); return; }
+    btn.disabled = false;
+    btn.textContent = '🔊 Nghe lời giảng';
+    btn.addEventListener('click', () => playTTS(text));
+}
+
+function _deepPanelQuiz(wid, data) {
+    const el = document.querySelector(`#${wid}-deep .deep-quiz`);
+    if (!el) return;
+    const qs = data.questions || [];
+    if (!qs.length) { el.innerHTML = '<div class="deep-item">🎯 QuizAgent chưa ra được câu hỏi.</div>'; return; }
+    el.innerHTML = `<button class="deep-btn">🎯 Làm ${qs.length} câu trắc nghiệm về phản ứng này</button>`;
+    el.style.animation = 'fadeInUp 0.4s ease';
+    el.querySelector('button').addEventListener('click', () => openQuizWithQuestions(qs, data.topic));
+}
+
+// Mở cửa sổ Bài tập với bộ câu hỏi có sẵn (QuizAgent của Phân tích sâu, lệnh giọng nói "cho tôi bài tập")
+function openQuizWithQuestions(questions, topic) {
+    quizState.questions = questions;
+    quizState.topic = topic || 'Hóa học';
+    quizState.answers = {};
+    quizState.currentIdx = 0;
+    quizState.answered = false;
+    quizModal.classList.remove('hidden');
+    renderQuizQuestion();
+    quizShowScreen('quiz-question-screen');
+}
+
+function _deepPanelDone(wid, timing) {
+    const panel = document.getElementById(`${wid}-deep`);
+    if (!panel) return;
+    // Agent bị lỗi → không còn spinner treo
+    panel.querySelectorAll('.deep-loading').forEach(s => { s.textContent = '⚠️ Phần này chưa có kết quả.'; });
+    const marks = timing.marks || {};
+    const first = marks['Đợt 1 (phương trình)'];
+    panel.querySelector('.deep-timing').textContent =
+        `⏱ Phương trình: ${first != null ? (first / 1000).toFixed(1) + 's' : '—'} · ` +
+        `Hoàn tất: ${((timing.total_ms || 0) / 1000).toFixed(1)}s · ${timing.ai_calls || 0} lần gọi AI`;
 }
 
 /**
@@ -1566,6 +1873,13 @@ function handleVoiceAgentResult(res) {
                 showToast('Không có văn bản nào trên bảng để đọc!', 'warn');
             }
         }
+    } else if (res.type === 'quiz') {
+        // "Cho tôi bài tập..." → cửa sổ Bài tập: đáp án ẩn đến khi học sinh chọn, không có lời giảng/nghe giảng
+        if ((res.questions || []).length) {
+            openQuizWithQuestions(res.questions, res.topic);
+        } else {
+            showToast(res.reply || 'Chưa tạo được bài tập, thầy/cô thử nói rõ chủ đề hơn nhé.', 'warn');
+        }
     } else if (res.type === 'concept') {
         buildConceptWidget(res);
     } else if (res.type === 'answer') {
@@ -1661,15 +1975,13 @@ function replaceWithBeautifulText(text) {
         window.addOCRTextObject(text, textX, textY, strokeWidth, strokeHeight, 0.96, toRemove);
     } else {
         toRemove.forEach(obj => canvas.remove(obj));
-        const textLen = Math.max(1, text.length);
-        let computedFontSize = Math.sqrt((strokeWidth * strokeHeight) / (0.5 * textLen)) * 0.8;
-        computedFontSize = Math.min(computedFontSize, strokeHeight * 0.9);
+        const fontSize = getBoardFontSize();
         const textObj = new fabric.Textbox(text, {
             left: textX,
             top: textY,
             width: Math.max(50, strokeWidth),
             fontFamily: 'Inter, "Segoe UI", Arial, sans-serif',
-            fontSize: Math.max(16, computedFontSize), 
+            fontSize,
             fill: currentColor,
             selectable: true,
             evented: true,
@@ -1685,6 +1997,7 @@ function replaceWithBeautifulText(text) {
             hoverCursor: 'move',
             moveCursor: 'move'
         });
+        fitTextboxWidth(textObj, Math.max(120, Math.min(fontSize * 28, canvas.getWidth() - textX - TEXT_PLACE_MARGIN)));
         canvas.add(textObj);
         canvas.setActiveObject(textObj);
         canvas.renderAll();
@@ -3857,7 +4170,43 @@ let isRecording = false;
 let vrTimerInterval = null;
 let vrSeconds = 0;
 let currentTranscript = "";
-let silenceTimer = null;
+// Người dùng muốn thu tiếp: true từ lúc bấm Micro tới khi bấm dừng/Gửi/Hủy.
+// Trình duyệt tự kết thúc phiên nhận dạng (im lặng, ~60s) → tự bật lại để thu liên tục đoạn dài.
+let vrWantRecording = false;
+let vrRestartTimes = [];
+
+// ---- Chế độ Micro: 📝 Ghi lên bảng (mặc định) / 💬 Ra lệnh / Hỏi AI ----
+const VR_MODE_KEY = 'micMode';
+function getMicMode() {
+    try { return localStorage.getItem(VR_MODE_KEY) === 'command' ? 'command' : 'dictate'; } catch { return 'dictate'; }
+}
+function setMicMode(mode) {
+    try { localStorage.setItem(VR_MODE_KEY, mode); } catch { /* bỏ qua */ }
+    document.querySelectorAll('.vr-mode-btn').forEach(b => {
+        const on = b.dataset.mode === mode;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    if (vrBtnSubmit) {
+        vrBtnSubmit.innerHTML = mode === 'dictate'
+            ? '<i class="fas fa-pen"></i> Ghi lên bảng'
+            : '<i class="fas fa-paper-plane"></i> Gửi thực hiện';
+    }
+}
+document.querySelectorAll('.vr-mode-btn').forEach(b => b.addEventListener('click', () => {
+    setMicMode(b.dataset.mode);
+    vrTranscriptInput?.focus();
+}));
+setMicMode(getMicMode());
+
+// Ô chép lời đọc tự cao lên theo nội dung (tối đa ~5 dòng, rồi cuộn)
+function vrAutosize() {
+    if (!vrTranscriptInput) return;
+    vrTranscriptInput.style.height = 'auto';
+    vrTranscriptInput.style.height = Math.min(vrTranscriptInput.scrollHeight, 120) + 'px';
+    vrTranscriptInput.scrollTop = vrTranscriptInput.scrollHeight;
+}
+vrTranscriptInput?.addEventListener('input', vrAutosize);
 
 function setMicRecordingUI(active) {
     isRecording = active;
@@ -3870,8 +4219,16 @@ function setMicRecordingUI(active) {
         vrBtnMic?.classList.remove('recording');
         if (vrWaves) vrWaves.style.display = 'none';
         clearInterval(vrTimerInterval);
-        clearTimeout(silenceTimer);
     }
+}
+
+// Tạm dừng thu (giữ nguyên đoạn đã thu để nói tiếp hoặc sửa)
+function pauseVr() {
+    vrWantRecording = false;
+    if (recognition) {
+        try { recognition.stop(); } catch(e) {}
+    }
+    setMicRecordingUI(false);
 }
 
 function updateVrTime() {
@@ -3881,6 +4238,7 @@ function updateVrTime() {
 }
 
 function stopVr() {
+    vrWantRecording = false;
     setMicRecordingUI(false);
     if (recognition) {
         try { recognition.abort(); } catch(e) {}
@@ -3892,56 +4250,55 @@ function stopVr() {
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-function startVr() {
+// resume = true: nói tiếp sau khi tạm dừng — giữ đoạn đã thu (kể cả phần thầy/cô đã sửa tay)
+function startVr(resume = false) {
     // Luôn mở popup ngay lập tức để người dùng thấy phản hồi trực quan trên màn hình
     vrPopup?.classList.remove('hidden');
-    vrSeconds = 0;
+    if (resume) {
+        currentTranscript = vrTranscriptInput ? vrTranscriptInput.value.trim() + ' ' : currentTranscript;
+    } else {
+        vrSeconds = 0;
+        currentTranscript = "";
+        if (vrTranscriptInput) vrTranscriptInput.value = "";
+    }
     updateVrTime();
-    currentTranscript = "";
     window._currentInterim = "";
     if (vrTranscriptInput) {
-        vrTranscriptInput.value = "";
-        vrTranscriptInput.placeholder = "Đang lắng nghe giọng nói của thầy/cô... (hoặc gõ lệnh tại đây)";
+        vrTranscriptInput.placeholder = "Đang lắng nghe giọng nói của thầy/cô... (hoặc gõ tại đây)";
         vrTranscriptInput.focus();
+        vrAutosize();
     }
 
     if (!SpeechRecognition) {
         setMicRecordingUI(false);
         showToast('Trình duyệt chưa hỗ trợ nhận diện giọng nói tự động. Thầy/cô có thể gõ lệnh trực tiếp!', 'warn');
-        if (vrTranscriptInput) vrTranscriptInput.placeholder = "Nhập lệnh (ví dụ: đổi màu đỏ, xóa bảng, H2SO4)...";
+        if (vrTranscriptInput) vrTranscriptInput.placeholder = "Nhập nội dung (ví dụ: Cho 5,6 gam Fe tác dụng với HCl...)";
         return;
     }
 
+    vrWantRecording = true;
+    vrRestartTimes = [];
+    setMicRecordingUI(true);
+    clearInterval(vrTimerInterval);
+    vrTimerInterval = setInterval(() => { vrSeconds++; updateVrTime(); }, 1000);
+    _startRecognition();
+}
+
+// Mở một phiên nhận dạng; phiên kết thúc mà người dùng chưa bấm dừng/Gửi → tự mở phiên mới, nối tiếp đoạn đã thu
+function _startRecognition() {
     // Luôn dọn dẹp phiên trước nếu đang chạy dở
     if (recognition) {
+        recognition.onend = null;
         try { recognition.abort(); } catch(e) {}
         recognition = null;
     }
 
+    let fatal = false;
     try {
         recognition = new SpeechRecognition();
         recognition.lang = 'vi-VN';
         recognition.continuous = true;
         recognition.interimResults = true;
-
-        recognition.onstart = () => {
-            setMicRecordingUI(true);
-            vrSeconds = 0;
-            updateVrTime();
-            
-            clearInterval(vrTimerInterval);
-            vrTimerInterval = setInterval(() => {
-                vrSeconds++;
-                updateVrTime();
-            }, 1000);
-            
-            clearTimeout(silenceTimer);
-            silenceTimer = setTimeout(() => {
-                if (isRecording && recognition) {
-                    try { recognition.stop(); } catch(e) {}
-                }
-            }, 8000);
-        };
 
         recognition.onresult = (event) => {
             let finalTrans = "";
@@ -3957,49 +4314,58 @@ function startVr() {
                 currentTranscript += finalTrans;
             }
             window._currentInterim = interimTrans;
-            
+
             const previewText = (currentTranscript + " " + interimTrans).trim();
             if (vrTranscriptInput && previewText) {
                 vrTranscriptInput.value = previewText;
+                vrAutosize();
             }
-
-            clearTimeout(silenceTimer);
-            silenceTimer = setTimeout(() => {
-                if (isRecording && recognition) {
-                    try { recognition.stop(); } catch(e) {}
-                }
-            }, interimTrans.trim() ? 2500 : 1500);
         };
 
         recognition.onerror = (event) => {
             console.warn('SpeechRecognition error:', event.error);
-            setMicRecordingUI(false);
-            if (event.error === 'not-allowed') {
+            if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+                fatal = true;
                 showToast('Chưa cấp quyền Micro! Thầy/cô hãy cho phép micro hoặc gõ lệnh trực tiếp.', 'warn');
-                if (vrTranscriptInput) vrTranscriptInput.placeholder = "Chưa cấp quyền micro. Gõ lệnh rồi bấm Gửi...";
+                if (vrTranscriptInput) vrTranscriptInput.placeholder = "Chưa cấp quyền micro. Gõ nội dung rồi bấm Gửi...";
             } else if (event.error === 'network') {
+                fatal = true;
                 showToast('Lỗi mạng kết nối giọng nói Google. Thầy/cô có thể gõ lệnh trực tiếp.', 'warn');
-                if (vrTranscriptInput) vrTranscriptInput.placeholder = "Nhập lệnh rồi bấm Gửi thực hiện...";
+                if (vrTranscriptInput) vrTranscriptInput.placeholder = "Nhập nội dung rồi bấm Gửi...";
             } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
                 showToast('Lỗi micro: ' + event.error, 'error');
             }
         };
 
         recognition.onend = () => {
+            // Giữ phần đang nói dở của phiên vừa kết thúc
+            if (window._currentInterim) {
+                currentTranscript += window._currentInterim + " ";
+                window._currentInterim = "";
+            }
+            const fullText = currentTranscript.trim();
+            if (vrTranscriptInput && fullText) { vrTranscriptInput.value = fullText; vrAutosize(); }
+
+            // Chống lặp vô hạn: quá 6 lần tự bật lại trong 15s (mic hỏng, không có tiếng) thì dừng
+            const now = Date.now();
+            vrRestartTimes = vrRestartTimes.filter(t => now - t < 15000);
+            if (vrWantRecording && !fatal && vrRestartTimes.length < 6) {
+                vrRestartTimes.push(now);
+                setTimeout(() => { if (vrWantRecording) _startRecognition(); }, 200);
+                return;
+            }
+            vrWantRecording = false;
             setMicRecordingUI(false);
-            const fullText = (currentTranscript + " " + (window._currentInterim || "")).trim();
             if (vrTranscriptInput) {
-                if (fullText) vrTranscriptInput.value = fullText;
-                vrTranscriptInput.placeholder = "Bấm [Gửi thực hiện] hoặc Enter để chạy...";
+                vrTranscriptInput.placeholder = "Bấm [Gửi] hoặc Enter để thực hiện...";
                 vrTranscriptInput.focus();
             }
         };
 
-        // Bật visual recording UI trước trong khi đợi trình duyệt mở mic
-        setMicRecordingUI(true);
         recognition.start();
     } catch (err) {
         console.error('Lỗi khi kích hoạt SpeechRecognition:', err);
+        vrWantRecording = false;
         setMicRecordingUI(false);
         showToast('Không thể mở micro trực tiếp. Thầy/cô có thể gõ lệnh!', 'warn');
     }
@@ -4011,35 +4377,31 @@ btnMic?.addEventListener('click', () => {
         startVr();
     } else if (isRecording) {
         // Đang nói -> bấm để tạm dừng ghi âm
-        if (recognition) {
-            try { recognition.stop(); } catch(e) {}
-        }
-        setMicRecordingUI(false);
+        pauseVr();
     } else {
-        // Đã mở nhưng dừng -> bấm để tiếp tục nói
-        startVr();
+        // Đã mở nhưng dừng -> bấm để nói tiếp (giữ đoạn đã thu)
+        startVr(true);
     }
 });
 
 // Bắt sự kiện bấm nút Micro bên trong Popup
 vrBtnMic?.addEventListener('click', () => {
     if (isRecording) {
-        if (recognition) {
-            try { recognition.stop(); } catch(e) {}
-        }
-        setMicRecordingUI(false);
+        pauseVr();
     } else {
-        startVr();
+        startVr(true);
     }
 });
 
-// Hàm gửi lệnh khi giáo viên bấm nút [Gửi thực hiện] hoặc nhấn Enter
+// Hàm gửi khi giáo viên bấm nút [Gửi] hoặc nhấn Enter
 const submitVoiceCommand = () => {
     const text = vrTranscriptInput ? vrTranscriptInput.value.trim() : "";
-    if (text) {
-        sendVoiceToAI(text);
+    if (!text) {
+        showToast('Chưa có nội dung để thực hiện!', 'warn');
+    } else if (getMicMode() === 'dictate') {
+        sendDictateToAI(text);
     } else {
-        showToast('Chưa có nội dung lệnh để thực hiện!', 'warn');
+        sendVoiceToAI(text);
     }
     stopVr();
 };
@@ -4047,7 +4409,8 @@ const submitVoiceCommand = () => {
 vrBtnSubmit?.addEventListener('click', submitVoiceCommand);
 
 vrTranscriptInput?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        // Enter = Gửi; Shift+Enter = xuống dòng khi sửa tay
         e.preventDefault();
         submitVoiceCommand();
     } else if (e.key === 'Escape') {
@@ -4060,22 +4423,99 @@ vrBtnDelete?.addEventListener('click', () => {
     stopVr();
 });
 
+// ============================================================
+//  ĐẶT CHỮ MỚI (Micro "ghi lên bảng", chèn khái niệm, công cụ chữ)
+//  Chữ đầu tiên ở góc trên-trái vùng nhìn thấy; lần sau xuống dòng dưới chữ vừa thêm;
+//  tránh nét vẽ/chữ/widget đang có; hết chỗ phía dưới → sang cột bên cạnh.
+// ============================================================
+const TEXT_PLACE_MARGIN = 24;   // cách mép vùng nhìn thấy
+const TEXT_PLACE_GAP    = 14;   // khoảng cách như xuống dòng giữa hai chữ
+let _lastAddedText = null;      // chữ thêm gần nhất (mất khi chuyển trang vì canvas nạp object mới)
+
+// Vùng canvas đang nhìn thấy trong khung cuộn trang (tọa độ canvas)
+function _visibleCanvasRect() {
+    const W = canvas.getWidth(), H = canvas.getHeight();
+    const cr = canvas.upperCanvasEl.getBoundingClientRect();
+    const sc = document.getElementById('page-scroller');
+    const vr = sc ? sc.getBoundingClientRect() : { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    const kx = W / (cr.width || W), ky = H / (cr.height || H);
+    const left   = Math.max(0, (Math.max(vr.left, 0) - cr.left) * kx);
+    const top    = Math.max(0, (Math.max(vr.top, 0) - cr.top) * ky);
+    const right  = Math.min(W, (Math.min(vr.right, window.innerWidth) - cr.left) * kx);
+    const bottom = Math.min(H, (Math.min(vr.bottom, window.innerHeight) - cr.top) * ky);
+    return (right - left > 100 && bottom - top > 60) ? { left, top, right, bottom } : { left: 0, top: 0, right: W, bottom: H };
+}
+
+// Hình chữ nhật đang chiếm chỗ: object trên canvas (+ widget DOM nếu withWidgets)
+function _occupiedRects(withWidgets) {
+    const rects = canvas.getObjects()
+        .filter(o => o.visible !== false)
+        .map(o => { const b = o.getBoundingRect(true, true); return { left: b.left, top: b.top, right: b.left + b.width, bottom: b.top + b.height }; });
+    if (withWidgets) {
+        const cr = canvas.upperCanvasEl.getBoundingClientRect();
+        const kx = canvas.getWidth() / (cr.width || 1), ky = canvas.getHeight() / (cr.height || 1);
+        document.querySelectorAll('.smart-widget').forEach(w => {
+            const r = w.getBoundingClientRect();
+            if (!r.width || !r.height) return;
+            rects.push({ left: (r.left - cr.left) * kx, top: (r.top - cr.top) * ky, right: (r.right - cr.left) * kx, bottom: (r.bottom - cr.top) * ky });
+        });
+    }
+    return rects;
+}
+
+// Tìm góc trên-trái cho khối w×h: cột của chữ vừa thêm (ngay bên dưới nó) → các cột bên phải → các cột từ mép trái
+function _findTextSlot(w, h, withWidgets) {
+    const V = _visibleCanvasRect(), M = TEXT_PLACE_MARGIN, G = TEXT_PLACE_GAP;
+    const obstacles = _occupiedRects(withWidgets);
+    const minX = V.left + M, maxX = V.right - M, minY = V.top + M, maxY = V.bottom - M;
+
+    const scanColumn = (x, yStart) => {
+        let y = Math.max(minY, yStart);
+        while (y + h <= maxY) {
+            const hits = obstacles.filter(o => x < o.right + G && x + w > o.left - G && y < o.bottom + G && y + h > o.top - G);
+            if (!hits.length) return { x, y };
+            y = Math.max(...hits.map(o => o.bottom)) + G;
+        }
+        return null;
+    };
+
+    const last = _lastAddedText && canvas.getObjects().includes(_lastAddedText) ? _lastAddedText.getBoundingRect(true, true) : null;
+    const startX = last ? Math.min(Math.max(minX, last.left), Math.max(minX, maxX - w)) : minX;
+    const step = w + 2 * G;
+    const columns = [];
+    for (let x = startX; x + w <= maxX; x += step) columns.push(x);
+    for (let x = minX; x + w <= maxX && x < startX - G; x += step) columns.push(x);
+
+    for (let i = 0; i < columns.length; i++) {
+        // Cột đầu: bắt đầu ngay dưới chữ vừa thêm; các cột khác: từ mép trên
+        const slot = scanColumn(columns[i], i === 0 && last ? last.top + last.height + G : minY);
+        if (slot) return slot;
+    }
+    return null;
+}
+
 function addTextToCanvas(text) {
-    const maxWidth = Math.min(500, canvasEl.clientWidth * 0.8);
+    const V = _visibleCanvasRect();
+    // Cỡ chữ theo nút "Aa"; khung rộng tối đa ~28 lần cỡ chữ (~50 ký tự/dòng) và không vượt vùng nhìn thấy,
+    // đoạn dài (đề bài đọc qua Micro) tự xuống dòng theo chiều rộng khung
+    const fontSize = getBoardFontSize();
+    const isLong = text.length > 60 || text.includes('\n');
+    const maxWidth = Math.max(120, Math.min(fontSize * 28, (V.right - V.left) - 2 * TEXT_PLACE_MARGIN));
     const textFill = (typeof currentColor !== 'undefined' && currentColor && currentColor !== '#0a1628')
         ? currentColor
         : '#ffffff';
 
     const textObj = new fabric.Textbox(text, {
-        left: canvasEl.clientWidth / 2,
-        top: canvasEl.clientHeight / 2,
-        originX: 'center',
-        originY: 'center',
+        left: V.left + TEXT_PLACE_MARGIN,
+        top: V.top + TEXT_PLACE_MARGIN,
+        originX: 'left',
+        originY: 'top',
         fill: textFill,
-        fontSize: 32,
+        fontSize,
+        lineHeight: isLong ? 1.3 : 1.16,
         fontFamily: 'Inter, "Segoe UI", Arial, sans-serif',
         width: maxWidth,
-        textAlign: 'center',
+        textAlign: 'left',
         selectable: true,
         evented: true,
         padding: 14,
@@ -4090,9 +4530,26 @@ function addTextToCanvas(text) {
         hoverCursor: 'move',
         moveCursor: 'move'
     });
+    // Thu khung chữ vừa đúng nội dung (câu ngắn không chiếm cả khung) để xếp được nhiều cột
+    fitTextboxWidth(textObj, maxWidth);
+
+    // Ưu tiên chỗ không bị widget che; hết chỗ thì chỉ tránh nét vẽ/chữ; vẫn hết thì đặt dưới chữ vừa thêm
+    const w = textObj.getScaledWidth(), h = textObj.getScaledHeight();
+    let slot = _findTextSlot(w, h, true) || _findTextSlot(w, h, false);
+    if (!slot) {
+        const last = _lastAddedText && canvas.getObjects().includes(_lastAddedText) ? _lastAddedText.getBoundingRect(true, true) : null;
+        slot = last
+            ? { x: last.left, y: Math.min(last.top + last.height + TEXT_PLACE_GAP, Math.max(V.top, V.bottom - h - TEXT_PLACE_MARGIN)) }
+            : { x: V.left + TEXT_PLACE_MARGIN, y: V.top + TEXT_PLACE_MARGIN };
+        showToast('Bảng đã kín chỗ — chữ mới có thể chồng lên nội dung cũ, hãy kéo ra chỗ khác.', 'warn');
+    }
+    textObj.set({ left: slot.x, top: slot.y });
+    textObj.setCoords();
+
     canvas.add(textObj);
     canvas.setActiveObject(textObj);
     canvas.renderAll();
+    _lastAddedText = textObj;
     saveState();
 }
 

@@ -139,6 +139,10 @@ def _parse_llm_json(text: str, model_candidate: str) -> dict:
     if text.endswith("```"): text = text[:-3]
     try:
         parsed = json.loads(text.strip())
+        # AI đôi khi bọc kết quả trong mảng: [{...}] → lấy object; mảng nhiều câu hỏi → {"questions": [...]}
+        if isinstance(parsed, list):
+            dicts = [x for x in parsed if isinstance(x, dict)]
+            parsed = dicts[0] if len(dicts) == 1 else {"questions": dicts}
         print(f"[LLM PARSED ({model_candidate})]: domain={parsed.get('domain','?')}")
         return parsed
     except json.JSONDecodeError as je:
@@ -266,7 +270,7 @@ async def call_llm(prompt: list, system_instruction: str,
         _cached_key = _load_api_key()
     current_key = _cached_key
     if not current_key:
-        return {"domain": "general", "explanation": "❌ Chưa cấu hình GEMINI_API_KEY trong file .env!"}
+        return {"domain": "general", "explanation": "❌ Chưa cấu hình GEMINI_API_KEY trong file .env!", "_llm_error": True}
 
     import time
     active_model_name = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
@@ -302,7 +306,7 @@ async def call_llm(prompt: list, system_instruction: str,
                     parsed = task.result()
                 except _ApiKeyInvalid:
                     print(f"[LLM] API KEY KHÔNG HỢP LỆ! Vui lòng lấy key mới.")
-                    return {"domain": "general", "explanation": "API Key không hợp lệ! Vui lòng cập nhật GEMINI_API_KEY trong file .env."}
+                    return {"domain": "general", "explanation": "API Key không hợp lệ! Vui lòng cập nhật GEMINI_API_KEY trong file .env.", "_llm_error": True}
                 except Exception as e:
                     print(f"[LLM ERROR with {m}]: {type(e).__name__}: {str(e)[:150]}", flush=True)
                     _model_cooldown_until[m] = time.time() + LLM_COOLDOWN_SECONDS
@@ -324,7 +328,8 @@ async def call_llm(prompt: list, system_instruction: str,
         for task in running:
             task.cancel()
 
-    return {"domain": "general", "explanation": "Hệ thống AI tạm thời bận do chạm giới hạn lượt gọi. Vui lòng thử lại sau vài giây!"}
+    # _llm_error: để agent (agents.py) nhận ra lỗi và chuyển sang chế độ dự phòng
+    return {"domain": "general", "explanation": "Hệ thống AI tạm thời bận do chạm giới hạn lượt gọi. Vui lòng thử lại sau vài giây!", "_llm_error": True}
 
 
 # --- AGENTS ---
@@ -1170,6 +1175,13 @@ class VoiceAssistantAgent:
         sys_instr = """You are an AI Voice Assistant and Chemistry/Science Tutor for a smart whiteboard app. 
 The user said something via microphone. Your job is to determine their intent.
 
+ƯU TIÊN SỐ 1 — ĐỌC ĐỀ BÀI / ĐOẠN VĂN ĐỂ GHI LÊN BẢNG:
+Nếu câu nói là một đoạn dài (từ khoảng 15 từ trở lên) hoặc giống đề bài hóa học: có số liệu và đơn vị (gam, g, ml, lít, mol, M, %, đkc),
+hoặc có các cụm "cho", "tính", "hòa tan", "dẫn", "đốt cháy", "nung", "thu được", "sau phản ứng", "xác định"...
+→ LUÔN trả về add_text, chép NGUYÊN VĂN toàn bộ câu nói (không tóm tắt, không giải bài, không thêm lời giải thích),
+chỉ đổi tên chất/công thức đọc bằng lời sang ký hiệu có chỉ số Unicode (vd "cờ ô hai" → CO₂, "natri hiđroxit" → NaOH) và thêm dấu câu.
+TUYỆT ĐỐI KHÔNG trả về "concept" cho trường hợp này, kể cả khi đề bài nhắc tới một dạng bài hay khái niệm.
+
 1. BOARD CONTROL COMMANDS:
 - Clear all: {"type": "command", "action": "clear_board", "reply": "Đã xóa toàn bộ bảng"}
 - Erase specific part: {"type": "command", "action": "erase_region", "args": {"box": [ymin, xmin, ymax, xmax], "target_text": "..."}, "reply": "Đã xóa phần bạn yêu cầu"}
@@ -1185,9 +1197,10 @@ The user said something via microphone. Your job is to determine their intent.
 - Analyze/Solve/Visualize: {"type": "command", "action": "analyze", "reply": "Đang xử lý..."}
 - Change tools: {"type": "command", "action": "set_mode", "args": {"mode": "draw" | "lasso" | "erase"}, "reply": "Đã chuyển công cụ"}
 
-2. SCIENCE & CHEMISTRY CONCEPT INQUIRIES (RẤT QUAN TRỌNG):
-Khi người dùng hỏi hoặc yêu cầu: "nêu khái niệm...", "khái niệm... là gì", "định nghĩa...", "tính chất của...", "các chất phản ứng với...", "giải thích về...":
-BẮT BUỘC trả về type "concept" chuẩn sư phạm THPT, trình bày chỉn chu, khoa học:
+2. SCIENCE & CHEMISTRY CONCEPT INQUIRIES:
+CHỈ KHI người dùng HỎI TRỰC TIẾP (câu ngắn, dạng câu hỏi/yêu cầu giải thích): "nêu khái niệm...", "khái niệm... là gì", "định nghĩa...", "tính chất của...", "các chất phản ứng với...", "giải thích về...":
+(Nếu là đề bài/đoạn văn để ghi lên bảng → xem ƯU TIÊN SỐ 1, dùng add_text.)
+Trả về type "concept" chuẩn sư phạm THPT, trình bày chỉn chu, khoa học:
 {
   "type": "concept",
   "title": "<Tên khái niệm chuẩn SGK, vd: Khái niệm Axit (Acid) / Các chất phản ứng với Axit>",
@@ -1200,7 +1213,16 @@ BẮT BUỘC trả về type "concept" chuẩn sư phạm THPT, trình bày ch�
   "reply": "<1 câu ngắn gọn 10-15 từ để AI phát âm thanh qua loa, vd: 'Đã mở bảng khái niệm chi tiết cho bạn trên màn hình.'>"
 }
 
-3. GENERAL QUESTIONS:
+3. YÊU CẦU RA BÀI TẬP / CÂU HỎI / ĐỀ KIỂM TRA:
+Khi người dùng muốn có bài tập để học sinh làm: "cho tôi bài tập...", "ra đề...", "tạo câu hỏi...", "cho mấy câu trắc nghiệm...", "kiểm tra 15 phút về...":
+TUYỆT ĐỐI KHÔNG tự viết câu hỏi hay đáp án ở đây. Chỉ trả về yêu cầu để hệ thống mở cửa sổ Bài tập:
+{"type": "quiz", "topic": "<chủ đề cụ thể, vd: CO₂ tác dụng với nước>", "num_questions": <số câu người dùng nói, mặc định 5>,
+ "question_type": "<mcq | essay | mixed — 'trắc nghiệm' → mcq, 'tự luận' → essay, cả hai → mixed, không nói → mcq>",
+ "level": "<nhan_biet | thong_hieu | van_dung | van_dung_cao | mixed — 'dễ' → nhan_biet, 'khó' → van_dung_cao, không nói → mixed>",
+ "reply": "Đang tạo bài tập"}
+Nếu người dùng nói "bài tập này", "phần này" mà không nêu chủ đề → lấy chủ đề từ nội dung trên ảnh bảng.
+
+4. GENERAL QUESTIONS:
 Nếu là câu hỏi thông thường khác:
 {"type": "answer", "title": "<Tiêu đề câu hỏi>", "reply": "<Câu trả lời súc tích>", "explanation": "<Nội dung giải thích chi tiết, gạch đầu dòng rõ ràng>"}
 
@@ -1224,6 +1246,80 @@ Respond STRICTLY in JSON format (without markdown backticks).
         result = await call_llm(prompt, sys_instr)
         await send_log("VoiceAgent", "Command processed.")
         return result
+
+
+DICTATE_PROMPT = """Bạn là thư ký chép bảng cho giáo viên Hóa học Việt Nam. Đầu vào là văn bản nhận dạng giọng nói (thường thiếu dấu câu).
+Nhiệm vụ: CHÉP LẠI NGUYÊN VĂN để ghi lên bảng.
+BẮT BUỘC:
+- Giữ nguyên từng câu chữ, thứ tự và độ dài. KHÔNG tóm tắt, KHÔNG bỏ câu, KHÔNG giải bài, KHÔNG thêm giải thích hay tiêu đề.
+- Chỉ được: (1) đổi MỌI tên chất (tiếng Việt) và công thức đọc bằng lời sang ký hiệu hóa học có chỉ số Unicode, không bỏ sót chất nào
+  (vd "cờ ô hai" → CO₂, "hát hai ét ô bốn" → H₂SO₄, "natri hiđroxit" → NaOH, "canxi cacbonat" → CaCO₃, "kẽm" → Zn,
+  "axit clohiđric" → HCl, "khí hiđro" → khí H₂, "sắt ba clorua" → FeCl₃, "H2O" → H₂O); giữ các từ đi kèm như "khí", "dung dịch";
+  (2) viết số liệu và đơn vị gọn (vd "hai phẩy hai bốn lít" → 2,24 lít, "không phẩy một mol" → 0,1 mol);
+  (3) thêm dấu câu, viết hoa đầu câu; (4) sửa lỗi nhận dạng giọng nói rõ ràng (vd "hoà tang" → "hòa tan").
+- Nếu người đọc nói "câu a", "ý b"... thì viết thành a), b) ĐÚNG chữ cái họ đọc (không tự đánh lại thứ tự, không thêm ý họ không đọc),
+  mỗi ý xuống một dòng mới (dùng \\n). Ngoài ra không tự xuống dòng.
+Trả về JSON: {"text": "<đoạn văn đã chép>"}"""
+
+
+async def dictate_to_board_text(raw: str) -> str:
+    """Chuẩn hóa lời đọc để ghi bảng. AI lỗi, hoặc trả về đoạn ngắn/dài bất thường (tóm tắt / thêm lời) → giữ nguyên lời đọc."""
+    try:
+        res = await call_llm([f"Văn bản nhận dạng giọng nói:\n{raw}"], DICTATE_PROMPT, hedge_delay=2.5, total_timeout=10.0)
+    except Exception as e:
+        print(f"[Dictate] Lỗi AI: {e}")
+        return raw
+    text = (res.get("text") or "").strip() if isinstance(res, dict) and not res.get("_llm_error") else ""
+    n_in, n_out = len(raw.split()), len(text.split())
+    # Đọc công thức bằng lời ("cờ ô hai" → CO₂) làm số từ giảm, nên cho phép tới 40%; dài hơn 130% là AI đã thêm lời
+    if not text or n_out < 0.4 * n_in or n_out > 1.3 * n_in + 3:
+        print(f"[Dictate] Bỏ kết quả AI ({n_in} → {n_out} từ), dùng nguyên lời đọc")
+        return raw
+    return text
+
+
+async def generate_quiz(source, num_questions: int, q_type: str, level: str):
+    """Tạo bài tập theo GDPT 2018. source: ảnh phần khoanh vùng (dict mime/data) hoặc chủ đề giáo viên nói (str).
+    SPEED: chia đề thành nhiều phần (~3 câu) và gọi AI SONG SONG — thời gian chờ gần như không tăng theo số câu.
+    Trả về (topic, questions) — questions đã chuẩn hóa (mcq có đáp án hợp lệ, còn lại là essay)."""
+    chunks = _quiz_chunks(_quiz_plan(num_questions, q_type, level))
+
+    async def gen_chunk(i, chunk):
+        kind = {"mcq": 'TRẮC NGHIỆM ("type": "mcq")', "essay": 'TỰ LUẬN ("type": "essay")'}
+        lines = "\n".join(f'- Câu {k + 1}: {kind[t]}, mức {QUIZ_LEVEL_LABEL[lv]} ("level": "{lv}")'
+                          for k, (t, lv) in enumerate(chunk["plan"]))
+        focus = (f"\nĐây là phần {i + 1}/{len(chunks)} của một đề (các phần khác soạn riêng). Để KHÔNG TRÙNG câu với phần khác, "
+                 f"phần này TẬP TRUNG vào: {chunk['focus']}.") if len(chunks) > 1 else ""
+        ask = f"Tạo ĐÚNG {len(chunk['plan'])} câu theo bảng sau:\n{lines}{focus}"
+        if isinstance(source, str):
+            prompt = [f"KHÔNG có ảnh. Giáo viên yêu cầu bằng lời ra bài tập về chủ đề: {source}\n"
+                      f"(Thay quy tắc 'nội dung trong ảnh' bằng đúng chủ đề này.) {ask}"]
+        else:
+            prompt = [f"Đây là phần nội dung giáo viên đã khoanh vùng trên bảng. {ask}", source]
+        try:
+            res = await call_llm(prompt, QUIZ_SYSTEM_PROMPT, hedge_delay=3.0, total_timeout=14.0)
+        except Exception as e:
+            print(f"[QUIZ] Phần {i + 1} lỗi: {e}")
+            return {}
+        return res if isinstance(res, dict) else {}
+
+    results = await asyncio.gather(*(gen_chunk(i, c) for i, c in enumerate(chunks)))
+    questions, topic = [], ""
+    for res in results:
+        topic = topic or res.get("topic", "")
+        for q in res.get("questions", []) or []:
+            if not isinstance(q, dict) or not q.get("question"):
+                continue
+            opts = q.get("options")
+            if isinstance(opts, dict) and len(opts) >= 2 and str(q.get("answer", "")).upper() in opts:
+                q["type"] = "mcq"
+                q["answer"] = str(q["answer"]).upper()
+            else:
+                q["type"] = "essay"
+                q["solution"] = q.get("solution") or q.get("explanation") or ""
+            q["id"] = len(questions) + 1
+            questions.append(q)
+    return topic, questions
 
 
 # --- WORKFLOW ---
@@ -1297,8 +1393,32 @@ Output strictly valid JSON (no markdown, no backticks):
                 await websocket.send_json({"type": "result_general", "explanation": "Không nhận diện được chữ viết, vui lòng viết lại rõ hơn."})
                 
         elif action == "auto_analyze":
-            agent = SuperAgent()
-            res = await agent.process(img, send_log)
+            import time
+            t_start = time.perf_counter()
+            fallback_used = False
+            res = None
+            if req.get("mode", "deep") == "deep":
+                # Chế độ "Phân tích sâu" (mặc định): nhiều agent (agents.py). Hóa học → Orchestrator tự gửi kết quả
+                # theo đợt; domain khác → trả kết quả VisionAgent để dùng lại luồng hiển thị bên dưới.
+                from agents import Orchestrator
+                try:
+                    res = await Orchestrator(websocket.send_json, send_log).run(img, req)
+                    if res is None:
+                        return
+                except WebSocketDisconnect:
+                    raise
+                except Exception as e:
+                    # Hết lượt API / quá thời gian / lỗi agent → chạy lại bằng SuperAgent để giáo viên vẫn có kết quả
+                    print(f"[FALLBACK] Chế độ sâu lỗi: {e!r} → SuperAgent")
+                    await send_log("Orchestrator", f"⚠️ Chế độ sâu gặp lỗi ({str(e)[:100]}) → chuyển sang chế độ dự phòng (SuperAgent)")
+                    fallback_used = True
+                    t_start = time.perf_counter()
+            if res is None:
+                # SuperAgent 1 lần gọi AI: chế độ dự phòng (hoặc khi gửi mode="fast", vd benchmark)
+                agent = SuperAgent()
+                res = await agent.process(img, send_log)
+                print(f"[TIMING] SuperAgent     {(time.perf_counter() - t_start) * 1000:7.0f} ms  | AI calls: 1"
+                      f"{' (dự phòng)' if fallback_used else ''}")
             domain = res.get("domain", "general")
             core   = res.get("core", {})
             tutor  = res.get("tutor", {})
@@ -1356,6 +1476,7 @@ Output strictly valid JSON (no markdown, no backticks):
                 # Gửi toàn bộ kết quả 1 lần duy nhất
                 await websocket.send_json({
                     "type":         "result_chemistry",
+                    "fallback":     fallback_used,
                     "equation":     res.get("equation", ""),
                     "reactants":    reactants,
                     "products":     products,
@@ -1415,7 +1536,20 @@ Output strictly valid JSON (no markdown, no backticks):
             text = req.get("text", "")
             agent = VoiceAssistantAgent()
             res = await agent.process(text, img, send_log)
-            if isinstance(res, dict) and res.get("explanation"):
+            if isinstance(res, dict) and res.get("type") == "quiz":
+                # "Cho tôi bài tập..." → mở cửa sổ Bài tập (đáp án ẩn đến khi chọn), không giải sẵn, không lời giảng
+                try:
+                    num = max(1, min(20, int(res.get("num_questions") or 5)))
+                except (TypeError, ValueError):
+                    num = 5
+                q_type = res.get("question_type") if res.get("question_type") in QUIZ_TYPE_RULES else "mcq"
+                level = res.get("level") if res.get("level") in QUIZ_LEVEL_RULES else "mixed"
+                topic_req = (res.get("topic") or text).strip()
+                await send_log("QuizAgent", f"🎯 Đang tạo {num} câu {QUIZ_TYPE_NAMES[q_type]} về: {topic_req[:60]}...")
+                topic, questions = await generate_quiz(topic_req, num, q_type, level)
+                res = {"type": "quiz", "topic": topic or topic_req, "questions": questions,
+                       "reply": f"Đã tạo {len(questions)} câu bài tập" if questions else "Chưa tạo được bài tập, thầy/cô thử nói rõ chủ đề hơn nhé."}
+            elif isinstance(res, dict) and res.get("explanation"):
                 try:
                     from chem_tts_module import generate_speech_script
                     await send_log("VoiceAgent", "🎙️ Đang tạo lời giảng sư phạm...")
@@ -1425,6 +1559,13 @@ Output strictly valid JSON (no markdown, no backticks):
                 except Exception as _e:
                     print(f"[VoiceAgent] Tạo speech_script lỗi: {_e}")
             await websocket.send_json({"type": "result_voice_agent", "data": res})
+
+        elif action == "voice_dictate":
+            # Micro chế độ "Ghi lên bảng": chép nguyên văn, chỉ chuẩn hóa tên chất/công thức + dấu câu
+            raw = req.get("text", "").strip()
+            await send_log("VoiceAgent", "📝 Đang chép lời đọc lên bảng...")
+            text = await dictate_to_board_text(raw) if raw else ""
+            await websocket.send_json({"type": "result_dictate", "text": text})
 
         elif action == "text_chemistry":
             problem_text = req.get("text", "").strip()
@@ -1454,43 +1595,7 @@ Output strictly valid JSON (no markdown, no backticks):
             SuperAgent().preprocess_image(img).save(img_buffer, format="JPEG", quality=90)
             img_part = {"mime_type": "image/jpeg", "data": img_buffer.getvalue()}
 
-            chunks = _quiz_chunks(_quiz_plan(num_questions, q_type, level))
-            sys_instr = QUIZ_SYSTEM_PROMPT
-
-            async def gen_chunk(i, chunk):
-                kind = {"mcq": 'TRẮC NGHIỆM ("type": "mcq")', "essay": 'TỰ LUẬN ("type": "essay")'}
-                lines = "\n".join(f'- Câu {k + 1}: {kind[t]}, mức {QUIZ_LEVEL_LABEL[lv]} ("level": "{lv}")'
-                                  for k, (t, lv) in enumerate(chunk["plan"]))
-                focus = (f"\nĐây là phần {i + 1}/{len(chunks)} của một đề (các phần khác soạn riêng). Để KHÔNG TRÙNG câu với phần khác, "
-                         f"phần này TẬP TRUNG vào: {chunk['focus']}.") if len(chunks) > 1 else ""
-                prompt = [
-                    f"Đây là phần nội dung giáo viên đã khoanh vùng trên bảng. Tạo ĐÚNG {len(chunk['plan'])} câu theo bảng sau:\n{lines}{focus}",
-                    img_part,
-                ]
-                n = len(chunk["plan"])
-                try:
-                    res = await call_llm(prompt, sys_instr, hedge_delay=3.0, total_timeout=14.0)
-                except Exception as e:
-                    print(f"[QUIZ] Phần {i + 1} lỗi: {e}")
-                    return {}
-                return res if isinstance(res, dict) else {}
-
-            results = await asyncio.gather(*(gen_chunk(i, c) for i, c in enumerate(chunks)))
-            questions, topic = [], ""
-            for res in results:
-                topic = topic or res.get("topic", "")
-                for q in res.get("questions", []) or []:
-                    if not isinstance(q, dict) or not q.get("question"):
-                        continue
-                    opts = q.get("options")
-                    if isinstance(opts, dict) and len(opts) >= 2 and str(q.get("answer", "")).upper() in opts:
-                        q["type"] = "mcq"
-                        q["answer"] = str(q["answer"]).upper()
-                    else:
-                        q["type"] = "essay"
-                        q["solution"] = q.get("solution") or q.get("explanation") or ""
-                    q["id"] = len(questions) + 1
-                    questions.append(q)
+            topic, questions = await generate_quiz(img_part, num_questions, q_type, level)
             if not questions:
                 await websocket.send_json({"type": "error", "message": "Phần khoanh vùng trống hoặc chữ quá mờ. Hãy viết rõ nội dung hóa học và thử lại!"})
             else:
