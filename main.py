@@ -1653,9 +1653,13 @@ if __name__ == "__main__":
     import webbrowser
     import threading
 
+    # Cổng chạy: mặc định 8000; máy nào bị trùng cổng với dự án khác thì đặt PORT=8001 trong file .env
+    port = int(os.getenv("PORT", "8000"))
+    url = f"http://127.0.0.1:{port}"
+
     # Tự động mở giao diện bảng thông minh trên trình duyệt sau 1.5s
-    threading.Timer(1.5, lambda: webbrowser.open("http://127.0.0.1:8000")).start()
+    threading.Timer(1.5, lambda: webbrowser.open(url)).start()
 
     print("🚀 Đang khởi động Bảng Trắng Thông Minh AI...")
-    print("🌐 Trình duyệt sẽ tự động mở tại: http://127.0.0.1:8000")
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    print(f"🌐 Trình duyệt sẽ tự động mở tại: {url}")
+    uvicorn.run("main:app", host="127.0.0.1", port=port, reload=True)

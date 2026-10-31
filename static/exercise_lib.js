@@ -73,9 +73,20 @@
     // ── Danh sách file đề ──
     async function refreshList(openName) {
         listEl.innerHTML = '<div class="exlib-empty">Đang tải...</div>';
-        let items = [];
-        try { items = await (await fetch('/api/exercises')).json(); }
-        catch (e) { listEl.innerHTML = '<div class="exlib-empty">⚠️ Không kết nối được server</div>'; return; }
+        let items = null;
+        // Server có thể đang khởi động lại (vd vừa git pull) → thử lại vài lần trước khi báo lỗi
+        for (let attempt = 0; attempt < 6 && !items; attempt++) {
+            if (attempt) await new Promise(r => setTimeout(r, 1000));
+            try {
+                const res = await fetch('/api/exercises');
+                if (res.ok) items = await res.json();
+            } catch (e) { /* thử lại */ }
+        }
+        if (!items) {
+            listEl.innerHTML = '<div class="exlib-empty">⚠️ Không kết nối được server<br><button class="exlib-retry">Thử lại</button></div>';
+            listEl.querySelector('.exlib-retry').addEventListener('click', () => refreshList(openName));
+            return;
+        }
         if (!items.length) {
             listEl.innerHTML = '<div class="exlib-empty">Chưa có đề nào.<br>Bấm <b>Tải đề lên</b> để thêm file Word, PDF hoặc ảnh.</div>';
             viewer.innerHTML = '';

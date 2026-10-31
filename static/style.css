@@ -4578,3 +4578,5 @@ img.exlib-page { height: auto; }
 }
 
 
+.exlib-retry { margin-top: 8px; padding: 5px 14px; border-radius: 8px; border: 1px solid #3b82f6; background: rgba(59,130,246,0.15); color: #93c5fd; font-weight: 600; cursor: pointer; }
+.exlib-retry:hover { background: #3b82f6; color: #fff; }
