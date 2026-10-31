@@ -139,6 +139,10 @@ def _parse_llm_json(text: str, model_candidate: str) -> dict:
     if text.endswith("```"): text = text[:-3]
     try:
         parsed = json.loads(text.strip())
+        # AI đôi khi bọc kết quả trong mảng: [{...}] → lấy object; mảng nhiều câu hỏi → {"questions": [...]}
+        if isinstance(parsed, list):
+            dicts = [x for x in parsed if isinstance(x, dict)]
+            parsed = dicts[0] if len(dicts) == 1 else {"questions": dicts}
         print(f"[LLM PARSED ({model_candidate})]: domain={parsed.get('domain','?')}")
         return parsed
     except json.JSONDecodeError as je:
