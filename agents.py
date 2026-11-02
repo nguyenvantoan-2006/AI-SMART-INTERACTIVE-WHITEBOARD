@@ -132,9 +132,16 @@ class VisionAgent:
 SOLVER_PROMPT = """You are a Vietnamese high-school chemistry solver (GDPT 2018).
 Given reactants (and maybe a draft equation), give the correct, BALANCED main reaction taught in Vietnamese high school.
 Use plain ASCII formulas (H2SO4, Fe2(SO4)3). Put conditions in "conditions", NOT inside the equation.
+
+IMPORTANT RULES ON NON-REACTING SUBSTANCES:
+If NO chemical reaction occurs between the given reactants under standard / high-school conditions (e.g. H2 + H2SO4, Cu + HCl, Cu + H2SO4 loãng, Ag + HCl, NaCl + KNO3, BaSO4 + HCl):
+Set "reaction": false, "no_reaction_reason": "<clear concise explanation in Vietnamese why no reaction occurs>",
+"equation": "<reactants> -> khong phan ung", "reactants": [...], "products": [], "conditions": [], "catalyst": null.
+Otherwise, set "reaction": true, "no_reaction_reason": null.
+
 Return STRICTLY JSON:
-{"equation":"<balanced, e.g. 2Al + 6HCl -> 2AlCl3 + 3H2>","reactants":["Al","HCl"],"products":["AlCl3","H2"],
- "conditions":["<t°|MnO2|ánh sáng|...; empty list if none>"],"catalyst":"<catalyst or null>"}"""
+{"reaction":true,"equation":"<balanced, e.g. 2Al + 6HCl -> 2AlCl3 + 3H2>","reactants":["Al","HCl"],"products":["AlCl3","H2"],
+ "conditions":["<t°|MnO2|ánh sáng|...; empty list if none>"],"catalyst":"<catalyst or null>","no_reaction_reason":null}"""
 
 
 class SolverAgent:
@@ -143,6 +150,8 @@ class SolverAgent:
     def _python_balance(self, reactants: list, products: list, conditions: list):
         from chem_checker import balance_equation_matrix
         if not reactants or not products:
+            return None
+        if set([r.upper() for r in reactants]) == set([p.upper() for p in products]):
             return None
         try:
             coeffs = balance_equation_matrix(reactants, products)
@@ -158,6 +167,19 @@ class SolverAgent:
         conditions = [c for c in draft.get("conditions", []) if c]
         catalyst = draft.get("catalyst")
         ai_calls, source = 0, "python"
+
+        if feedback and (feedback.get("no_reaction") or any(e.get("type") == "no_reaction" for e in feedback.get("errors", []))):
+            reason = feedback.get("errors", [{}])[0].get("message", "Không có phản ứng hóa học xảy ra.")
+            equation = f"{' + '.join(reactants)} → không phản ứng"
+            await send_log(self.name, f"ℹ️ Xác nhận không phản ứng: {equation}")
+            timer.add(self.name, time.perf_counter() - t, 0, "(không phản ứng)")
+            return {
+                "equation": equation, "reactants": reactants, "products": [],
+                "catalyst": None, "conditions": [],
+                "molar_masses": {s: M.parse_molar_mass(s) for s in reactants},
+                "mol_calc": {}, "mol_variants": [],
+                "no_reaction": True, "no_reaction_reason": reason
+            }
 
         equation = None if feedback else self._python_balance(reactants, products, conditions)
         if equation:
@@ -177,10 +199,35 @@ class SolverAgent:
             if res.get("_llm_error"):
                 raise AgentFailure(f"SolverAgent: {res.get('explanation', 'AI không phản hồi')}")
             ai_calls, source = 1, "gemini"
+            eq_raw = str(res.get("equation", "")).lower()
+            if res.get("reaction") is False or res.get("no_reaction_reason") or "khong phan ung" in eq_raw or "không phản ứng" in eq_raw:
+                equation = f"{' + '.join(reactants)} → không phản ứng"
+                reason = res.get("no_reaction_reason") or "Các chất không phản ứng với nhau ở điều kiện thông thường."
+                await send_log(self.name, f"ℹ️ Nhận định không phản ứng: {equation} ({reason})")
+                timer.add(self.name, time.perf_counter() - t, 1, "(không phản ứng)")
+                return {
+                    "equation": equation, "reactants": reactants, "products": [],
+                    "catalyst": None, "conditions": [],
+                    "molar_masses": {s: M.parse_molar_mass(s) for s in reactants},
+                    "mol_calc": {}, "mol_variants": [],
+                    "no_reaction": True, "no_reaction_reason": reason
+                }
             reactants = res.get("reactants") or reactants
             products = res.get("products") or products
             conditions = res.get("conditions") or conditions
             catalyst = res.get("catalyst") or catalyst
+            if products and set([r.upper() for r in reactants]) == set([p.upper() for p in products]):
+                equation = f"{' + '.join(reactants)} → không phản ứng"
+                reason = "Các chất sau phản ứng trùng với chất tham gia ban đầu, không tạo thành chất mới."
+                await send_log(self.name, f"ℹ️ {reason}")
+                timer.add(self.name, time.perf_counter() - t, 1, "(không phản ứng)")
+                return {
+                    "equation": equation, "reactants": reactants, "products": [],
+                    "catalyst": None, "conditions": [],
+                    "molar_masses": {s: M.parse_molar_mass(s) for s in reactants},
+                    "mol_calc": {}, "mol_variants": [],
+                    "no_reaction": True, "no_reaction_reason": reason
+                }
             # Kiểm chứng lại hệ số AI đưa ra bằng Python; AI sai hệ số thì dùng hệ số Python
             equation = self._python_balance(reactants, products, conditions) or res.get("equation", "")
             if not equation:
@@ -212,6 +259,18 @@ class VerifierAgent:
         from chem_checker import check_equation_pedagogy
         M = _m()
         t = time.perf_counter()
+        if sol.get("no_reaction"):
+            timer.add(self.name, time.perf_counter() - t, 0, "KHÔNG PHẢN ỨNG")
+            await send_log(self.name, f"✅ Xác nhận: {sol.get('no_reaction_reason', 'Không có phản ứng hóa học xảy ra.')}")
+            return {
+                "ok": True, "no_reaction": True,
+                "check": {
+                    "is_correct": False, "no_reaction": True,
+                    "errors": [{"type": "no_reaction", "message": sol.get("no_reaction_reason", "Không xảy ra phản ứng")}],
+                    "suggestion": sol["equation"]
+                },
+                "safety": {"level": "safe", "reason": "Các chất bền vững, không phản ứng hóa học ở điều kiện thông thường."}
+            }
         ascii_eq = to_ascii_equation(sol["equation"], sol.get("conditions"))
         check = check_equation_pedagogy(ascii_eq)
         safety = M.check_safety(sol["reactants"], sol["products"], equation=ascii_eq)
@@ -221,13 +280,14 @@ class VerifierAgent:
         else:
             msgs = " | ".join(e["message"] for e in check["errors"])
             await send_log(f"{self.name} → SolverAgent", f"❌ {msgs[:160]}")
-        return {"ok": check["is_correct"], "check": check, "safety": safety}
+        return {"ok": check["is_correct"], "check": check, "safety": safety, "no_reaction": check.get("no_reaction", False)}
 
 
 # ============================================================
 #  TUTOR AGENT — lời giảng (1 AI) + kịch bản đọc TTS
 # ============================================================
-TUTOR_PROMPT = """Bạn là giáo viên Hóa THPT Việt Nam. Viết lời giảng NGẮN cho phương trình đã được kiểm chứng.
+TUTOR_PROMPT = """Bạn là giáo viên Hóa THPT Việt Nam. Viết lời giảng NGẮN cho phương trình hoặc hiện tượng đã được kiểm chứng.
+Nếu phương trình ghi "không phản ứng", hãy giải thích sư phạm tại sao các chất này không phản ứng với nhau ở điều kiện thông thường (dựa vào dãy hoạt động hóa học, tính oxi hóa - khử, hoặc điều kiện phản ứng trao đổi).
 Không đổi phương trình. Tiếng Việt, chỉ số Unicode (H₂SO₄). Trả về JSON:
 {"reaction_type_label":"<loại phản ứng>","mechanism":"<1 câu bản chất>","theory":"<1-2 câu lý thuyết>",
  "phenomenon":"<hiện tượng quan sát>","applications":"<1 câu ứng dụng>","student_note":"<1 câu lưu ý dễ sai>",
@@ -361,6 +421,8 @@ class Orchestrator:
             "equation": sol["equation"],
             "reactants": sol["reactants"],
             "products": sol["products"],
+            "no_reaction": sol.get("no_reaction", False) or ver.get("no_reaction", False),
+            "no_reaction_reason": sol.get("no_reaction_reason", "") or (ver.get("check", {}).get("errors", [{}])[0].get("message") if ver.get("no_reaction") else ""),
             "explanation": "",
             "catalyst": sol["catalyst"],
             "conditions": sol["conditions"],
