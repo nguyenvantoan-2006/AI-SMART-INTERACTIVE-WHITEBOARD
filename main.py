@@ -98,7 +98,7 @@ def _get_model(model_name_: str, system_instruction: str):
     return _model_cache[cache_key]
 
 DEFAULT_MODEL = "gemini-3.5-flash-lite"   # ~1-2s response time
-FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"]
+FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-flash-lite-latest"]
 
 # SPEED OPT: Giảm hedge delay để backup model nhảy vào ngay sau 3s nếu model chính chậm
 LLM_HEDGE_DELAY       = 3.0               # giây — chờ bao lâu thì gọi thêm model dự phòng
@@ -1297,7 +1297,7 @@ async def generate_quiz(source, num_questions: int, q_type: str, level: str):
         else:
             prompt = [f"Đây là phần nội dung giáo viên đã khoanh vùng trên bảng. {ask}", source]
         try:
-            res = await call_llm(prompt, QUIZ_SYSTEM_PROMPT, hedge_delay=3.0, total_timeout=14.0)
+            res = await call_llm(prompt, QUIZ_SYSTEM_PROMPT, hedge_delay=4.0, total_timeout=18.0)
         except Exception as e:
             print(f"[QUIZ] Phần {i + 1} lỗi: {e}")
             return {}
@@ -1319,6 +1319,36 @@ async def generate_quiz(source, num_questions: int, q_type: str, level: str):
                 q["solution"] = q.get("solution") or q.get("explanation") or ""
             q["id"] = len(questions) + 1
             questions.append(q)
+
+    # DỰ PHÒNG KHẨN CẤP: Nếu gọi song song bị lỗi/timeout không ra câu hỏi, gọi 1 lượt tổng hợp
+    if not questions:
+        print("[QUIZ] Gọi lại bằng chế độ single-pass fallback...")
+        try:
+            kind_txt = "TRẮC NGHIỆM" if q_type == "mcq" else ("TỰ LUẬN" if q_type == "essay" else "TRẮC NGHIỆM VÀ TỰ LUẬN")
+            lvl_name = QUIZ_LEVEL_NAMES.get(level, level)
+            ask = f"Tạo {num_questions} câu {kind_txt} theo chuẩn GDPT 2018 (mức độ: {lvl_name})."
+            if isinstance(source, str):
+                fb_prompt = [f"Chủ đề hóa học: {source}. {ask}"]
+            else:
+                fb_prompt = [f"Dựa vào nội dung hình ảnh trên bảng. {ask}", source]
+            fb_res = await call_llm(fb_prompt, QUIZ_SYSTEM_PROMPT, hedge_delay=4.0, total_timeout=22.0)
+            if isinstance(fb_res, dict):
+                topic = topic or fb_res.get("topic", "")
+                for q in fb_res.get("questions", []) or []:
+                    if not isinstance(q, dict) or not q.get("question"):
+                        continue
+                    opts = q.get("options")
+                    if isinstance(opts, dict) and len(opts) >= 2 and str(q.get("answer", "")).upper() in opts:
+                        q["type"] = "mcq"
+                        q["answer"] = str(q["answer"]).upper()
+                    else:
+                        q["type"] = "essay"
+                        q["solution"] = q.get("solution") or q.get("explanation") or ""
+                    q["id"] = len(questions) + 1
+                    questions.append(q)
+        except Exception as e:
+            print(f"[QUIZ FALLBACK ERROR]: {e}")
+
     return topic, questions
 
 
@@ -1438,6 +1468,23 @@ Output strictly valid JSON (no markdown, no backticks):
             elif domain == "chemistry":
                 reactants = res.get("reactants", [])
                 products  = res.get("products",  [])
+                eq_text   = res.get("equation", "") or req.get("text", "") or ""
+
+                # === SƯ PHẠM: Kiểm tra phản ứng có xảy ra không (Tránh ảo giác H2 + H2SO4 -> H2SO4 + H2) ===
+                pedagogy_check = check_equation_pedagogy(eq_text) if eq_text else {"is_correct": True}
+                is_no_reaction = bool(pedagogy_check.get("no_reaction", False))
+                if not is_no_reaction:
+                    r_norm = set(r.upper().strip() for r in reactants if r.strip())
+                    p_norm = set(p.upper().strip() for p in products if p.strip())
+                    if len(r_norm) > 0 and r_norm == p_norm:
+                        is_no_reaction = True
+
+                no_reaction_reason = ""
+                if is_no_reaction:
+                    products = []
+                    err_msg = pedagogy_check.get("errors", [{}])[0].get("message", "") if pedagogy_check.get("errors") else ""
+                    no_reaction_reason = err_msg or "Phản ứng không xảy ra ở điều kiện thông thường (chất tham gia bền vững)."
+                    res["equation"] = f"{' + '.join(reactants)} ⇸ không phản ứng"
 
                 # === LAYER 1: Hardcoded Safety DB — không cần AI, không thể bypass ===
                 await send_log("SafetyAgent", "Kiểm tra an toàn hóa chất...")
@@ -1480,6 +1527,8 @@ Output strictly valid JSON (no markdown, no backticks):
                     "equation":     res.get("equation", ""),
                     "reactants":    reactants,
                     "products":     products,
+                    "no_reaction":  is_no_reaction,
+                    "no_reaction_reason": no_reaction_reason,
                     "explanation":  res.get("explanation", ""),
                     "catalyst":     catalyst,
                     "conditions":   conditions,
@@ -1601,7 +1650,8 @@ Output strictly valid JSON (no markdown, no backticks):
 
             topic, questions = await generate_quiz(source_input, num_questions, q_type, level)
             if not questions:
-                await websocket.send_json({"type": "error", "message": "Phần khoanh vùng trống hoặc chữ quá mờ. Hãy viết rõ nội dung hóa học và thử lại!"})
+                err_msg = "Phần khoanh vùng trống hoặc chữ quá mờ. Hãy viết rõ nội dung hóa học và thử lại!" if img else f"Không tạo được câu hỏi từ chủ đề '{topic_text}'. Hãy thử lại với công thức hoặc chủ đề cụ thể hơn!"
+                await websocket.send_json({"type": "error", "message": err_msg})
             else:
                 await send_log("QuizAgent", f"✅ Đã tạo {len(questions)} câu về: {topic}")
                 await websocket.send_json({"type": "result_quiz", "topic": topic or "Hóa học", "questions": questions})

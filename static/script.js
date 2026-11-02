@@ -1044,6 +1044,9 @@ function showLassoCheckActionPill(x, y, w) {
 
 // ---- CROP: Pure DOM canvas — correctly handles devicePixelRatio ----
 function cropCanvas(cssX, cssY, cssW, cssH) {
+    if (typeof canvas !== 'undefined' && canvas && typeof canvas.renderAll === 'function') {
+        try { canvas.renderAll(); } catch(e) {}
+    }
     const lower  = document.querySelector('#canvas-section .lower-canvas');
     // Physical pixels vs CSS pixels
     const scaleX = lower.width  / canvasEl.clientWidth;
@@ -2997,9 +3000,10 @@ function buildChemWidget(data) {
         rightEl.style.opacity = '1';
         rightEl.style.filter = 'none';
     } else {
-        rightEl.style.opacity = '0.12';
-        rightEl.style.filter = 'blur(5px)';
-        rightEl.style.transition = 'all 1.4s ease';
+        // Luôn hiển thị sản phẩm rõ nét để giáo viên/học sinh nhận diện ngay từ đầu
+        rightEl.style.opacity = '0.9';
+        rightEl.style.filter = 'none';
+        rightEl.style.transition = 'all 0.5s ease';
     }
 
     // Load 3D AFTER widget is in DOM (requestAnimationFrame ensures layout is done)
@@ -3057,8 +3061,8 @@ function buildChemWidget(data) {
         leftEl.style.transform = '';
         leftEl.style.opacity = '1';
         rightEl.style.transition = 'all 0.5s ease';
-        rightEl.style.opacity = '0.12';
-        rightEl.style.filter = 'blur(5px)';
+        rightEl.style.opacity = '0.9';
+        rightEl.style.filter = 'none';
         document.getElementById(`cw-arrow-${wid}`).style.transform = '';
         document.getElementById(`cw-arrow-${wid}`).style.color = '';
         document.getElementById(`cw-flash-${wid}`).style.opacity = '0';
@@ -4682,13 +4686,68 @@ function quizSetupMessage(msg) {
     el.classList.toggle('hidden', !msg);
 }
 
-// Bài tập chỉ tạo từ PHẦN ĐÃ KHOANH VÙNG: trả về lý do chưa tạo được, hoặc '' nếu sẵn sàng
-function quizBlockReason() {
-    if (!lastLassoCrop) {
-        return '⭕ Hãy dùng nút Khoanh vùng ở thanh công cụ dưới để khoanh phần nội dung cần tạo bài tập, rồi bấm Tạo bài tập.';
+// Lấy nội dung hóa học từ vùng chọn hiện tại (chữ đang chọn, đối tượng active, hoặc vùng khoanh)
+function getActiveCanvasChemistryContent() {
+    // 1. Chữ đang được chọn trực tiếp trên bảng (ví dụ đang click chọn khung chữ "Al + HCl")
+    if (typeof getSelectedTextObjects === 'function') {
+        const activeTextObjs = getSelectedTextObjects();
+        if (activeTextObjs.length > 0) {
+            const text = activeTextObjs.map(o => o.text).filter(Boolean).join('; ').trim();
+            if (text) return { type: 'text', content: text };
+        }
     }
-    if (typeof getObjectsInLasso === 'function' && getObjectsInLasso(lastLassoCrop).length === 0) {
-        return '✏️ Vùng khoanh đang trống — hãy khoanh đúng phần có phương trình hoặc nội dung hóa học.';
+
+    // 2. Đối tượng đang active trên canvas (Fabric activeObject / activeSelection)
+    if (typeof canvas !== 'undefined' && canvas && canvas.getActiveObject) {
+        const act = canvas.getActiveObject();
+        if (act) {
+            if (act.text && act.text.trim()) {
+                return { type: 'text', content: act.text.trim() };
+            }
+            if (act._objects && act._objects.length) {
+                const subTexts = act._objects.filter(o => o.text && o.text.trim()).map(o => o.text.trim());
+                if (subTexts.length > 0) {
+                    return { type: 'text', content: subTexts.join('; ') };
+                }
+            }
+            // Nếu là nét vẽ chữ viết tay hoặc hình vẽ đang chọn: tự động crop khung bao quanh
+            try {
+                if (typeof canvas.renderAll === 'function') canvas.renderAll();
+                const b = act.getBoundingRect(true, true);
+                if (b && b.width > 15 && b.height > 15) {
+                    const dataURL = cropCanvas(b.left, b.top, b.width, b.height);
+                    lastLassoCrop = { dataURL, x: b.left, y: b.top, w: b.width, h: b.height };
+                    return { type: 'crop', content: dataURL, crop: lastLassoCrop };
+                }
+            } catch (e) {
+                console.warn('[QUIZ] Lỗi crop activeObject:', e);
+            }
+        }
+    }
+
+    // 3. Vùng khoanh lasso đã có sẵn
+    if (lastLassoCrop && lastLassoCrop.dataURL) {
+        return { type: 'crop', content: lastLassoCrop.dataURL, crop: lastLassoCrop };
+    }
+
+    // 4. Nếu trên bảng có khung chữ hóa học: tự động lấy khung chữ gần nhất
+    if (typeof canvas !== 'undefined' && canvas && canvas.getObjects) {
+        const textObjs = canvas.getObjects().filter(o => TEXT_OBJ_TYPES.has(o.type) && o.text && o.text.trim());
+        if (textObjs.length > 0) {
+            const lastText = textObjs[textObjs.length - 1].text.trim();
+            if (lastText) return { type: 'text', content: lastText };
+        }
+    }
+
+    return null;
+}
+
+// Kiểm tra lý do chưa thể tạo đề (hoặc '' nếu đã có chữ hoặc vùng khoanh sẵn sàng)
+function quizBlockReason() {
+    if (quizState.topicFromWidget) return '';
+    const chem = getActiveCanvasChemistryContent();
+    if (!chem) {
+        return '⭕ Hãy chọn chữ (ví dụ Al + HCl) hoặc dùng công cụ Khoanh vùng nội dung cần tạo bài tập.';
     }
     return '';
 }
@@ -4701,10 +4760,17 @@ function quizOpenModal(topicFromWidget = null) {
         document.getElementById('quiz-start-btn').disabled = false;
         quizSetupMessage(`🧪 Đang tạo bài tập theo phương trình: ${topicFromWidget}`);
     } else {
-        quizState.topicFromWidget = null;
-        const reason = quizBlockReason();
-        document.getElementById('quiz-start-btn').disabled = !!reason;
-        quizSetupMessage(reason);
+        const chem = getActiveCanvasChemistryContent();
+        if (chem && chem.type === 'text') {
+            quizState.topicFromWidget = chem.content;
+            document.getElementById('quiz-start-btn').disabled = false;
+            quizSetupMessage(`🧪 Đang tạo bài tập theo nội dung đã chọn: ${chem.content}`);
+        } else {
+            quizState.topicFromWidget = null;
+            const reason = quizBlockReason();
+            document.getElementById('quiz-start-btn').disabled = !!reason;
+            quizSetupMessage(reason);
+        }
     }
 }
 
@@ -4815,12 +4881,19 @@ function startQuizGeneration() {
         };
         if (quizState.topicFromWidget) {
             payload.topic_text = quizState.topicFromWidget;
-        } else if (lastLassoCrop && lastLassoCrop.dataURL) {
-            payload.image = lastLassoCrop.dataURL;
         } else {
-            quizOpenModal();
-            ws.close();
-            return;
+            const chem = getActiveCanvasChemistryContent();
+            if (chem && chem.type === 'text') {
+                payload.topic_text = chem.content;
+            } else if (chem && chem.type === 'crop') {
+                payload.image = chem.content;
+            } else if (lastLassoCrop && lastLassoCrop.dataURL) {
+                payload.image = lastLassoCrop.dataURL;
+            } else {
+                quizOpenModal();
+                ws.close();
+                return;
+            }
         }
         ws.send(JSON.stringify(payload));
     };
