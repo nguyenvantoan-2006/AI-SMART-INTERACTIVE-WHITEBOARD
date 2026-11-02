@@ -153,7 +153,7 @@
                             <button class="quiz-chip" data-val="thong_hieu">Thông hiểu</button>
                             <button class="quiz-chip" data-val="van_dung">Vận dụng</button>
                             <button class="quiz-chip" data-val="van_dung_cao">Vận dụng cao</button>
-                            <button class="quiz-chip active" data-val="mixed">Trộn các mức</button>
+                            <button class="quiz-chip active" data-val="mixed">Ma trận 4 mức (40-30-20-10)</button>
                         </div>
                     </div>
                 </div>
@@ -174,6 +174,8 @@
                 <div class="quiz-toolbar" id="quiz-toolbar">
                     <span class="quiz-grip" title="Kéo để di chuyển khung câu hỏi"><i class="fas fa-grip-horizontal"></i> Kéo để di chuyển</span>
                     <div class="quiz-size-tools">
+                        <button class="quiz-tool" id="quiz-export-word-direct" title="Xuất đề thi ra file Word (.docx)"><i class="fas fa-file-word"></i> Word</button>
+                        <button class="quiz-tool" id="quiz-export-pdf-direct" title="In hoặc lưu đề thi dạng PDF"><i class="fas fa-print"></i> In / PDF</button>
                         <button class="quiz-tool" id="quiz-font-dec" title="Thu nhỏ chữ">A−</button>
                         <span class="quiz-font-val" id="quiz-font-val">100%</span>
                         <button class="quiz-tool" id="quiz-font-inc" title="Phóng to chữ">A+</button>
@@ -211,6 +213,8 @@
                 </div>
                 <div class="quiz-review" id="quiz-review"></div>
                 <div class="quiz-result-actions">
+                    <button id="quiz-export-word-btn" class="quiz-btn quiz-btn-info"><i class="fas fa-file-word"></i> Xuất Word (.docx)</button>
+                    <button id="quiz-export-pdf-btn" class="quiz-btn quiz-btn-secondary"><i class="fas fa-print"></i> In / Lưu PDF</button>
                     <button id="quiz-retry-btn" class="quiz-btn quiz-btn-primary"><i class="fas fa-redo"></i> Làm lại</button>
                     <button id="quiz-exit-btn" class="quiz-btn quiz-btn-ghost"><i class="fas fa-times"></i> Đóng</button>
                 </div>
@@ -334,6 +338,7 @@
     <script src="chem_visuals.js?v=35"></script>
     <script src="script.js?v=20261031_voicequiz"></script>
     <script src="virtual_lab.js?v=7"></script>
+    <script src="collision_sim.js?v=1"></script>
     <script src="exercise_lib.js?v=5"></script>
     <!-- Page Manager: multi-page + OCR dedup + i18n (loads AFTER script.js) -->
     <script src="page_manager.js?v=20261031_fontsize"></script>

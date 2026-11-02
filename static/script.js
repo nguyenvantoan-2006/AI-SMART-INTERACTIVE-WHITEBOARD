@@ -2719,6 +2719,15 @@ function buildChemWidget(data) {
         return;
     }
 
+    // Nhận diện phản ứng không xảy ra
+    const isNoReaction = Boolean(data.no_reaction || data.reaction === false || 
+        products.length === 0 || 
+        /không phản ứng|khong phan ung/i.test(equation) ||
+        (products.length > 0 && products.length === reactants.length && products.every(p => reactants.some(r => r.toUpperCase() === p.toUpperCase()))));
+    const noReactionReason = data.no_reaction_reason || 
+        (data.verification?.errors?.find(e => /không có phản ứng|không phản ứng/i.test(e))) || 
+        'Các chất tham gia bền vững, không phản ứng hóa học với nhau ở điều kiện thông thường.';
+
     // === SAFETY HARD-GUARD (BẢO VỆ PHÒNG THÍ NGHIỆM TUYỆT ĐỐI — CLIENT-SIDE FAIL-SAFE) ===
     const eqUpper = (equation || "").toUpperCase();
     const rJoined = (reactants || []).join(" ").toUpperCase();
@@ -2786,7 +2795,15 @@ function buildChemWidget(data) {
     // ── Safety Banner: chỉ một thanh mức an toàn (AN TOÀN / THẬN TRỌNG / NGUY HIỂM) ──
     // Đã bỏ phần giải thích dài (cơ chế, lý thuyết, ứng dụng...) theo yêu cầu.
     // Phản ứng nguy hiểm vẫn có cảnh báo toàn màn hình (showRedAlertShield) ở trên.
-    const safetyBannerHtml = `
+    const safetyBannerHtml = isNoReaction ? `
+        <div class="safety-banner" style="background:linear-gradient(135deg,#1e293b,#334155);border-left:4px solid #f59e0b;padding:8px 14px;">
+            <div class="safety-header" style="cursor:default;display:flex;align-items:center;gap:8px;">
+                <span class="safety-icon" style="font-size:18px;">ℹ️</span>
+                <span class="safety-label" style="color:#fcd34d;font-weight:700;font-size:13px;">LƯU Ý SƯ PHẠM — KHÔNG XẢY RA PHẢN ỨNG HÓA HỌC</span>
+            </div>
+            <div style="font-size:12px;color:#cbd5e1;margin-top:4px;line-height:1.4;">${escHtml(noReactionReason)}</div>
+        </div>
+    ` : `
         <div class="safety-banner safety-collapsed ${sc.pulse ? 'safety-pulse' : ''}"
              style="background:${sc.bg};border-left:4px solid ${sc.border};">
             <div class="safety-header" style="cursor:default;">
@@ -2810,11 +2827,14 @@ function buildChemWidget(data) {
     // ── Equation info bar: hiển thị phương trình + khái niệm ─────
     // Áp dụng canonicalizeEquation trước khi render
     const cleanEquation = canonicalizeEquation(equation);
-    const equationBarHtml = cleanEquation ? `
+    const equationDisplay = isNoReaction 
+        ? `${reactants.map(r => renderFormulaHtml(r)).join(' + ')} <span style="color:#f87171;font-weight:700;margin:0 6px;">⇸</span> <span style="color:#fca5a5;font-style:italic;">Không phản ứng</span>`
+        : renderFormulaHtml(cleanEquation);
+    const equationBarHtml = cleanEquation || isNoReaction ? `
         <div class="cw-equation-bar">
             <div class="cw-eq-row">
-                <span class="cw-eq-icon">🧪</span>
-                <span class="cw-eq-formula">${renderFormulaHtml(cleanEquation)}</span>
+                <span class="cw-eq-icon">${isNoReaction ? '⚠️' : '🧪'}</span>
+                <span class="cw-eq-formula">${equationDisplay}</span>
             </div>
         </div>
     ` : '';
@@ -2872,19 +2892,26 @@ function buildChemWidget(data) {
             <!-- CENTER: Controls -->
             <div class="cw-mid">
                 <div class="cw-big-arrow" id="cw-arrow-${wid}">
-                    <span class="cw-arrow-sym">→</span>
-                    ${conditions.filter(c => c !== catalyst).length > 0 ? `<div class="cw-conditions-badge">${conditions.filter(c => c !== catalyst).map(c => `<span class="cw-cond-tag">${escHtml(c)}</span>`).join('')}</div>` : ''}
-                    ${catalyst ? `<div class="cw-catalyst-label" title="Chất xúc tác"><span class="cw-cat-icon">⚡</span>Xúc tác: ${escHtml(catalyst)}</div>` : `<div class="cw-catalyst-label cw-no-catalyst">Không cần xúc tác</div>`}
+                    <span class="cw-arrow-sym" style="${isNoReaction ? 'color:#ef4444;' : ''}">${isNoReaction ? '⇸' : '→'}</span>
+                    ${isNoReaction ? '<div class="cw-no-reaction-badge" style="background:rgba(239,68,68,0.2);color:#fca5a5;border:1px solid #ef4444;border-radius:12px;padding:2px 8px;font-size:11px;font-weight:600;margin-top:4px;">Không phản ứng</div>' : ''}
+                    ${!isNoReaction && conditions.filter(c => c !== catalyst).length > 0 ? `<div class="cw-conditions-badge">${conditions.filter(c => c !== catalyst).map(c => `<span class="cw-cond-tag">${escHtml(c)}</span>`).join('')}</div>` : ''}
+                    ${!isNoReaction ? (catalyst ? `<div class="cw-catalyst-label" title="Chất xúc tác"><span class="cw-cat-icon">⚡</span>Xúc tác: ${escHtml(catalyst)}</div>` : `<div class="cw-catalyst-label cw-no-catalyst">Không cần xúc tác</div>`) : ''}
                 </div>
-                <button class="cw-play-btn" id="cw-play-${wid}">▶ Xem phản ứng</button>
+                <button class="cw-play-btn" id="cw-play-${wid}">${isNoReaction ? 'ℹ️ Xem giải thích' : '▶ Xem phản ứng'}</button>
                 <button class="cw-replay-btn hidden" id="cw-replay-${wid}">🔄 Làm lại</button>
             </div>
 
             <!-- RIGHT: Products -->
             <div class="cw-side cw-products" id="cw-right-${wid}">
-                <div class="cw-side-label" style="color:var(--green);">● Sản phẩm</div>
+                <div class="cw-side-label" style="color:${isNoReaction ? '#94a3b8' : 'var(--green)'};">● Sản phẩm</div>
                 <div class="cw-mols-wrap">
-                    ${products.map((p, i) => {
+                    ${isNoReaction ? `
+                        <div class="cw-no-reaction-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(15,23,42,0.6);border:1.5px dashed rgba(148,163,184,0.35);border-radius:14px;padding:20px 16px;min-width:180px;text-align:center;">
+                            <div style="font-size:30px;margin-bottom:6px;">🚫</div>
+                            <div style="font-weight:700;color:#e2e8f0;font-size:13px;margin-bottom:4px;">Không tạo chất mới</div>
+                            <div style="font-size:11px;line-height:1.4;color:#94a3b8;">Phân tử va chạm không hiệu quả, giữ nguyên ban đầu</div>
+                        </div>
+                    ` : products.map((p, i) => {
                         const st = STATE_CFG[detectMolState(p, equation, true)];
                         return `
                         <div class="cw-mol-card">
@@ -2904,9 +2931,14 @@ function buildChemWidget(data) {
         <div class="cw-footer">
             <span class="cw-eq-text">${escHtml(equation)}</span>
             <span class="cw-note-text">${escHtml(note)}</span>
-            <button class="cw-quiz-cta" onclick="quizOpenModal()">
-                <i class="fas fa-question-circle"></i> 📝 Tạo bài tập về phản ứng này
-            </button>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <button class="cw-collision-cta" id="cw-collision-${wid}">
+                    <i class="fas fa-atom"></i> ⚛️ Mô phỏng Thuyết va chạm 3D
+                </button>
+                <button class="cw-quiz-cta" id="cw-quiz-btn-${wid}">
+                    <i class="fas fa-question-circle"></i> 📝 Tạo bài tập về phản ứng này
+                </button>
+            </div>
         </div>
 
 
@@ -2927,6 +2959,28 @@ function buildChemWidget(data) {
         initVirtualLab(wid, { equation: cleanEquation || equation, reactants, products, catalyst, conditions });
     }
 
+    const quizBtn = document.getElementById(`cw-quiz-btn-${wid}`);
+    if (quizBtn) {
+        quizBtn.addEventListener('click', () => {
+            quizOpenModal(cleanEquation || equation);
+        });
+    }
+
+    const collisionBtn = document.getElementById(`cw-collision-${wid}`);
+    if (collisionBtn) {
+        collisionBtn.addEventListener('click', () => {
+            if (typeof openCollisionSimulator === 'function') {
+                openCollisionSimulator({
+                    equation: cleanEquation || equation,
+                    reactants,
+                    products,
+                    isNoReaction,
+                    reason: noReactionReason
+                });
+            }
+        });
+    }
+
     // Gắn sự kiện tính toán bằng addEventListener trực tiếp — Không bao giờ bị lỗi nháy kép HTML
     const calcBtn = document.getElementById(`mol-calc-btn-${wid}`);
     if (calcBtn) {
@@ -2937,11 +2991,16 @@ function buildChemWidget(data) {
         });
     }
 
-    // Hide products initially
+    // Hide products initially if reaction, or show directly if no reaction
     const rightEl = document.getElementById(`cw-right-${wid}`);
-    rightEl.style.opacity = '0.12';
-    rightEl.style.filter = 'blur(5px)';
-    rightEl.style.transition = 'all 1.4s ease';
+    if (isNoReaction) {
+        rightEl.style.opacity = '1';
+        rightEl.style.filter = 'none';
+    } else {
+        rightEl.style.opacity = '0.12';
+        rightEl.style.filter = 'blur(5px)';
+        rightEl.style.transition = 'all 1.4s ease';
+    }
 
     // Load 3D AFTER widget is in DOM (requestAnimationFrame ensures layout is done)
     requestAnimationFrame(() => {
@@ -2970,6 +3029,19 @@ function buildChemWidget(data) {
 
     // Play
     document.getElementById(`cw-play-${wid}`).addEventListener('click', () => {
+        if (isNoReaction) {
+            const deepPanel = widget.querySelector('.cw-deep-panel') || document.querySelector('.cw-footer');
+            if (deepPanel) deepPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            showToast('⚠️ Không xảy ra phản ứng: ' + (noReactionReason || 'Chất trơ / không phản ứng'), 'warning');
+            const arrowSym = document.querySelector(`#cw-arrow-${wid} .cw-arrow-sym`);
+            if (arrowSym) {
+                arrowSym.style.transition = 'all 0.3s ease';
+                arrowSym.style.transform = 'scale(1.4)';
+                arrowSym.style.color = '#ef4444';
+                setTimeout(() => { arrowSym.style.transform = 'scale(1)'; }, 500);
+            }
+            return;
+        }
         ChemicalSoundSynthesizer.init();
         document.getElementById(`cw-play-${wid}`).classList.add('hidden');
         playChemAnim(wid, soundType);
@@ -4621,12 +4693,19 @@ function quizBlockReason() {
     return '';
 }
 
-function quizOpenModal() {
+function quizOpenModal(topicFromWidget = null) {
     quizModal.classList.remove('hidden');
     quizShowScreen('quiz-setup-screen');
-    const reason = quizBlockReason();
-    document.getElementById('quiz-start-btn').disabled = !!reason;
-    quizSetupMessage(reason);
+    if (topicFromWidget && typeof topicFromWidget === 'string') {
+        quizState.topicFromWidget = topicFromWidget;
+        document.getElementById('quiz-start-btn').disabled = false;
+        quizSetupMessage(`🧪 Đang tạo bài tập theo phương trình: ${topicFromWidget}`);
+    } else {
+        quizState.topicFromWidget = null;
+        const reason = quizBlockReason();
+        document.getElementById('quiz-start-btn').disabled = !!reason;
+        quizSetupMessage(reason);
+    }
 }
 
 function quizCloseModal() {
@@ -4724,21 +4803,26 @@ function quizBadgeInfo(q) {
 }
 
 function startQuizGeneration() {
-    // Chỉ gửi ảnh PHẦN ĐÃ KHOANH VÙNG (không dùng toàn bộ bảng)
-    if (!lastLassoCrop || !lastLassoCrop.dataURL) { quizOpenModal(); return; }
-    const imageData = lastLassoCrop.dataURL;
-
     const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${wsProto}://${location.host}/ws/analyze`);
 
     ws.onopen = () => {
-        ws.send(JSON.stringify({
+        const payload = {
             action: 'quiz_generate',
-            image: imageData,
             num_questions: quizState.numQuestions,
             question_type: quizState.questionType,
             level: quizState.level,
-        }));
+        };
+        if (quizState.topicFromWidget) {
+            payload.topic_text = quizState.topicFromWidget;
+        } else if (lastLassoCrop && lastLassoCrop.dataURL) {
+            payload.image = lastLassoCrop.dataURL;
+        } else {
+            quizOpenModal();
+            ws.close();
+            return;
+        }
+        ws.send(JSON.stringify(payload));
     };
 
     ws.onmessage = (event) => {
@@ -5032,6 +5116,191 @@ function showQuizResult() {
 
     quizShowScreen('quiz-result-screen');
 }
+
+// ---- XUẤT ĐỀ THI RA FILE WORD (.DOCX) CHUẨN GDPT 2018 ----
+async function exportQuizWord() {
+    if (!quizState.questions || quizState.questions.length === 0) {
+        showToast('Chưa có câu hỏi nào để xuất đề', 'warning');
+        return;
+    }
+    showToast('📄 Đang khởi tạo đề thi Word chuẩn GDPT 2018...', 'info');
+    try {
+        const payload = {
+            topic: quizState.topic || 'Hóa học THPT',
+            questions: quizState.questions,
+            school_name: 'SỞ GD&ĐT THÁI NGUYÊN',
+            exam_title: 'ĐỀ KIỂM TRA ĐÁNH GIÁ MÔN HÓA HỌC',
+            exam_time: Math.max(15, quizState.questions.length * 3)
+        };
+        const res = await fetch('/api/quiz/export_word', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error('Không thể xuất file Word');
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `De_Kiem_Tra_Hoa_Hoc_${Date.now()}.docx`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        window.URL.revokeObjectURL(url);
+        showToast('✅ Đã xuất đề thi Word thành công!', 'success');
+    } catch (e) {
+        showToast('❌ Lỗi khi xuất Word: ' + e.message, 'error');
+    }
+}
+
+// ---- IN HOẶC LƯU DẠNG PDF CHUẨN IN ẤN TRƯỜNG HỌC ----
+function exportQuizPdf() {
+    if (!quizState.questions || quizState.questions.length === 0) {
+        showToast('Chưa có câu hỏi nào để in đề', 'warning');
+        return;
+    }
+    const topic = quizState.topic || 'Hóa học THPT';
+    const questions = quizState.questions;
+    const duration = Math.max(15, questions.length * 3);
+
+    const levels = { 'nhận_biết': 0, 'thông_hiểu': 0, 'vận_dụng': 0, 'vận_dụng_cao': 0 };
+    questions.forEach(q => {
+        const lv = q.level || 'nhận_biết';
+        levels[lv] = (levels[lv] || 0) + 1;
+    });
+
+    const printWin = window.open('', '_blank');
+    if (!printWin) {
+        showToast('Trình duyệt đã chặn popup, vui lòng cho phép popup để in đề thi', 'warning');
+        return;
+    }
+
+    const html = `<!DOCTYPE html>
+    <html lang="vi">
+    <head>
+        <meta charset="utf-8">
+        <title>Đề kiểm tra Hóa học — ${topic}</title>
+        <style>
+            @page { size: A4; margin: 18mm 18mm 18mm 18mm; }
+            body { font-family: 'Times New Roman', serif; font-size: 13pt; line-height: 1.35; color: #000; margin: 0; padding: 0; }
+            .header-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+            .header-table td { vertical-align: top; text-align: center; }
+            .title-box h3 { margin: 0; font-size: 11pt; font-weight: bold; }
+            .title-box h2 { margin: 2px 0; font-size: 13pt; font-weight: bold; }
+            .title-box p { margin: 2px 0; font-size: 10.5pt; font-style: italic; }
+            .cand-info { border-bottom: 1px dashed #444; padding-bottom: 6px; margin-bottom: 12px; font-style: italic; }
+            .matrix-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 10pt; }
+            .matrix-table th, .matrix-table td { border: 1px solid #444; padding: 4px 8px; text-align: center; }
+            .matrix-table th { background: #f0f0f0; }
+            .sec-title { font-weight: bold; margin-top: 10px; margin-bottom: 6px; text-transform: uppercase; font-size: 12pt; }
+            .question-item { margin-bottom: 10px; page-break-inside: avoid; }
+            .q-title { font-weight: bold; }
+            .options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin-top: 4px; padding-left: 12px; }
+            .page-break { page-break-before: always; }
+            .key-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; text-align: center; font-size: 11pt; }
+            .key-table th, .key-table td { border: 1px solid #333; padding: 4px; }
+            .key-table th { background: #f5f5f5; font-size: 10pt; }
+            .ans-exp-item { margin-bottom: 8px; page-break-inside: avoid; font-size: 11pt; }
+            @media print {
+                .no-print { display: none !important; }
+            }
+        </style>
+    </head>
+    <body>
+        <table class="header-table">
+            <tr>
+                <td style="width: 45%;">
+                    <div class="title-box">
+                        <h3>SỞ GD&ĐT THÁI NGUYÊN</h3>
+                        <h3>TRƯỜNG THPT CHUYÊN / THPT</h3>
+                        <p>───── ★ ─────</p>
+                    </div>
+                </td>
+                <td style="width: 55%;">
+                    <div class="title-box">
+                        <h2>ĐỀ KIỂM TRA ĐÁNH GIÁ MÔN HÓA HỌC</h2>
+                        <p>NĂM HỌC 2025 – 2026 | CHƯƠNG TRÌNH GDPT 2018</p>
+                        <p>Chủ đề: <b>${topic}</b> | Thời gian: ${duration} phút</p>
+                    </div>
+                </td>
+            </tr>
+        </table>
+
+        <div class="cand-info">
+            Họ và tên thí sinh: ............................................................................ Lớp: ................. SBD: ............ Mã đề: 101
+        </div>
+
+        <div class="sec-title">I. Ma trận đặc tả đề kiểm tra</div>
+        <table class="matrix-table">
+            <tr>
+                <th>Mức độ</th><th>Nhận biết</th><th>Thông hiểu</th><th>Vận dụng</th><th>Vận dụng cao</th><th>Tổng số</th>
+            </tr>
+            <tr>
+                <td>Số câu</td>
+                <td>${levels['nhận_biết']} (${Math.round(levels['nhận_biết']*100/questions.length)}%)</td>
+                <td>${levels['thông_hiểu']} (${Math.round(levels['thông_hiểu']*100/questions.length)}%)</td>
+                <td>${levels['vận_dụng']} (${Math.round(levels['vận_dụng']*100/questions.length)}%)</td>
+                <td>${levels['vận_dụng_cao']} (${Math.round(levels['vận_dụng_cao']*100/questions.length)}%)</td>
+                <td><b>${questions.length} (100%)</b></td>
+            </tr>
+        </table>
+
+        <div class="sec-title">II. Câu hỏi trắc nghiệm</div>
+        ${questions.map((q, i) => {
+            const lvMap = {'nhận_biết':'Nhận biết','thông_hiểu':'Thông hiểu','vận_dụng':'Vận dụng','vận_dụng_cao':'Vận dụng cao'};
+            const opts = q.options || {};
+            return `
+            <div class="question-item">
+                <span class="q-title">Câu ${i+1} [${lvMap[q.level] || 'Nhận biết'}]:</span> ${q.question}
+                ${q.options ? `
+                <div class="options-grid">
+                    <div><b>A.</b> ${opts.A || ''}</div>
+                    <div><b>B.</b> ${opts.B || ''}</div>
+                    <div><b>C.</b> ${opts.C || ''}</div>
+                    <div><b>D.</b> ${opts.D || ''}</div>
+                </div>` : '<div style="font-style:italic;color:#666;margin-top:4px;">(Thí sinh làm bài tự luận)</div>'}
+            </div>`;
+        }).join('')}
+
+        <div class="page-break"></div>
+
+        <div style="text-align:center;margin-bottom:12px;">
+            <h2 style="margin:0;font-size:14pt;">BẢNG ĐÁP ÁN VÀ HƯỚNG DẪN GIẢI CHI TIẾT</h2>
+            <p style="margin:2px 0;font-style:italic;">(Kèm theo Đề kiểm tra chủ đề: ${topic})</p>
+        </div>
+
+        <div class="sec-title">1. Bảng đáp án nhanh</div>
+        <table class="key-table">
+            <tr>${questions.map((_, i) => `<th>Câu ${i+1}</th>`).join('')}</tr>
+            <tr>${questions.map(q => `<td style="font-weight:bold;color:#047857;">${(q.answer || '-').toUpperCase()}</td>`).join('')}</tr>
+        </table>
+
+        <div class="sec-title">2. Hướng dẫn giải chi tiết</div>
+        ${questions.map((q, i) => `
+            <div class="ans-exp-item">
+                <b>Câu ${i+1}:</b> Đáp án <b>${(q.answer || '').toUpperCase()}</b>
+                ${q.options && q.options[q.answer] ? `— ${q.options[q.answer]}` : ''}
+                <br>
+                <i>💡 Lời giải:</i> ${q.explanation || q.solution || 'Theo chương trình chuẩn SGK.'}
+            </div>
+        `).join('')}
+    </body>
+    </html>`;
+
+    printWin.document.open();
+    printWin.document.write(html);
+    printWin.document.close();
+    setTimeout(() => {
+        printWin.focus();
+        printWin.print();
+    }, 450);
+}
+
+// Gắn sự kiện cho các nút xuất đề thi
+document.getElementById('quiz-export-word-btn')?.addEventListener('click', exportQuizWord);
+document.getElementById('quiz-export-word-direct')?.addEventListener('click', exportQuizWord);
+document.getElementById('quiz-export-pdf-btn')?.addEventListener('click', exportQuizPdf);
+document.getElementById('quiz-export-pdf-direct')?.addEventListener('click', exportQuizPdf);
 
 // ---- Top App Bar Actions (Luôn hiển thị trên cùng màn hình) ----
 const btnTopQuiz = document.getElementById('btn-top-quiz');

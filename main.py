@@ -1586,16 +1586,20 @@ Output strictly valid JSON (no markdown, no backticks):
             level = req.get("level", "mixed")
             if level not in QUIZ_LEVEL_RULES:
                 level = "mixed"
+            topic_text = req.get("topic_text", "").strip()
             await send_log("QuizAgent", f"🎯 Đang tạo {num_questions} câu {QUIZ_TYPE_NAMES[q_type]} — mức độ {QUIZ_LEVEL_NAMES[level]}...")
-            if not img:
-                await websocket.send_json({"type": "error", "message": "Chưa có phần khoanh vùng. Hãy khoanh vùng nội dung trước khi tạo bài tập!"})
+            if not img and not topic_text:
+                await websocket.send_json({"type": "error", "message": "Chưa có phần khoanh vùng hoặc chủ đề để tạo bài tập!"})
                 return
 
-            img_buffer = BytesIO()
-            SuperAgent().preprocess_image(img).save(img_buffer, format="JPEG", quality=90)
-            img_part = {"mime_type": "image/jpeg", "data": img_buffer.getvalue()}
+            if img:
+                img_buffer = BytesIO()
+                SuperAgent().preprocess_image(img).save(img_buffer, format="JPEG", quality=90)
+                source_input = {"mime_type": "image/jpeg", "data": img_buffer.getvalue()}
+            else:
+                source_input = topic_text
 
-            topic, questions = await generate_quiz(img_part, num_questions, q_type, level)
+            topic, questions = await generate_quiz(source_input, num_questions, q_type, level)
             if not questions:
                 await websocket.send_json({"type": "error", "message": "Phần khoanh vùng trống hoặc chữ quá mờ. Hãy viết rõ nội dung hóa học và thử lại!"})
             else:
@@ -1664,6 +1668,30 @@ async def api_check_equation(payload: dict):
     if not text:
         raise HTTPException(status_code=400, detail="Thiếu text phương trình")
     return check_equation_pedagogy(text)
+
+
+@app.post("/api/quiz/export_word")
+async def api_export_quiz_word(payload: dict):
+    """Xuất đề thi trắc nghiệm và bảng đáp án ra file Word (.docx) chuẩn GDPT 2018."""
+    from quiz_exporter import generate_quiz_docx
+    from fastapi.responses import Response
+    import time as _t
+    topic = payload.get("topic", "Hóa học THPT")
+    questions = payload.get("questions", [])
+    school_name = payload.get("school_name", "SỞ GD&ĐT THÁI NGUYÊN")
+    exam_title = payload.get("exam_title", "ĐỀ KIỂM TRA ĐÁNH GIÁ MÔN HÓA HỌC")
+    exam_time = payload.get("exam_time", 15)
+    
+    if not questions:
+        raise HTTPException(status_code=400, detail="Không có câu hỏi để xuất đề")
+        
+    docx_bytes = generate_quiz_docx(topic, questions, school_name, exam_title, exam_time)
+    filename = f"De_Kiem_Tra_{int(_t.time())}.docx"
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 
 # ============================================================
