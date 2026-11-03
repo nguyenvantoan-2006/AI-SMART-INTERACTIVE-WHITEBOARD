@@ -2742,6 +2742,7 @@ function buildChemWidget(data) {
         safety.level = 'danger';
         safety.is_critical = true;
         safety.reason = "CẢNH BÁO NGUY HIỂM: Tuyệt đối KHÔNG ĐƯỢC RÓT NƯỚC VÀO AXIT H₂SO₄ ĐẶC! Nước nhẹ hơn axit nên sôi cục bộ trên bề mặt, bắn tung tóe axit đặc ra ngoài gây bỏng axit nặng và mù mắt.";
+        safety.summary = safety.reason;
         safety.critical_safe_alt = "QUY TẮC VÀNG SGK HÓA 11: Rót từ từ axit H₂SO₄ đặc dọc theo đũa thủy tinh vào cốc nước lớn và khuấy nhẹ. TUYỆT ĐỐI KHÔNG ĐƯỢC LÀM NGƯỢC LẠI!";
     }
 
