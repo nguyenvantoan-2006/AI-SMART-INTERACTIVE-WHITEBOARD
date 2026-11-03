@@ -151,48 +151,6 @@ REACTION_RULES = [
         "correct_equation": "Cu + HCl → không phản ứng"
     },
     {
-        # H2 + H2SO4 loãng -> không phản ứng
-        "match": lambda r, p: ("H2" in r and "H2SO4" in r),
-        "error_type": "no_reaction",
-        "reason": "Khí hiđro (H₂) không tác dụng với dung dịch axit H₂SO₄ loãng ở điều kiện thông thường.",
-        "correct_equation": "H₂ + H₂SO₄ → không phản ứng"
-    },
-    {
-        # Cu + H2SO4 loãng -> không phản ứng
-        "match": lambda r, p: ("CU" in r and "H2SO4" in r and not any("HNO3" in x for x in r) and "SO2" not in p),
-        "error_type": "no_reaction",
-        "reason": "Đồng (Cu) đứng sau hiđro trong dãy hoạt động hóa học nên KHÔNG phản ứng với dung dịch axit H₂SO₄ loãng.",
-        "correct_equation": "Cu + H₂SO₄ (loãng) → không phản ứng"
-    },
-    {
-        # Ag + HCl -> không phản ứng
-        "match": lambda r, p: ("AG" in r and "HCL" in r),
-        "error_type": "no_reaction",
-        "reason": "Bạc (Ag) đứng sau hiđro trong dãy hoạt động hóa học nên KHÔNG phản ứng với dung dịch HCl.",
-        "correct_equation": "Ag + HCl → không phản ứng"
-    },
-    {
-        # Ag + H2SO4 loãng -> không phản ứng
-        "match": lambda r, p: ("AG" in r and "H2SO4" in r and "SO2" not in p),
-        "error_type": "no_reaction",
-        "reason": "Bạc (Ag) đứng sau hiđro trong dãy hoạt động hóa học nên KHÔNG phản ứng với dung dịch axit H₂SO₄ loãng.",
-        "correct_equation": "Ag + H₂SO₄ (loãng) → không phản ứng"
-    },
-    {
-        # NaCl + KNO3 -> không phản ứng
-        "match": lambda r, p: (("NACL" in r and "KNO3" in r) or ("KCL" in r and "NANO3" in r)),
-        "error_type": "no_reaction",
-        "reason": "Phản ứng trao đổi trong dung dịch không xảy ra do không tạo thành chất kết tủa, chất khí hay chất điện li yếu.",
-        "correct_equation": "NaCl + KNO₃ → không phản ứng"
-    },
-    {
-        # BaSO4 + HCl -> không phản ứng
-        "match": lambda r, p: ("BASO4" in r and "HCL" in r),
-        "error_type": "no_reaction",
-        "reason": "Bari sunfat (BaSO₄) là kết tủa rất bền vững, không tan trong axit mạnh như HCl.",
-        "correct_equation": "BaSO₄ + HCl → không phản ứng"
-    },
-    {
         # KClO3 phân hủy: cần t° và thường dùng MnO2
         "match": lambda r, p: ("KCLO3" in r and "KCL" in p and "O2" in p),
         "check_conditions": True,
@@ -473,20 +431,8 @@ def check_equation_pedagogy(raw_equation: str) -> Dict[str, Any]:
 
     reactant_formulas = [f for _, f in reactants_tuples]
     product_formulas = [f for _, f in products_tuples]
-    norm_reactants = [clean_substance(f).upper() for f in reactant_formulas]
-    norm_products = [clean_substance(f).upper() for f in product_formulas]
-
-    # --- KIỂM TRA TỔNG QUÁT: SẢN PHẨM TRÙNG VỚI CHẤT THAM GIA (KHÔNG XẢY RA BIẾN ĐỔI HÓA HỌC) ---
-    if set(norm_reactants) == set(norm_products):
-        res["is_correct"] = False
-        res["no_reaction"] = True
-        res["errors"].append({
-            "type": "no_reaction",
-            "message": "🔴 Không có phản ứng: Các chất sau phản ứng trùng với chất tham gia ban đầu, không tạo thành chất mới.",
-            "focus": raw_equation
-        })
-        res["suggestion"] = f"{' + '.join(reactant_formulas)} → không phản ứng"
-        return res
+    norm_reactants = [f.upper() for f in reactant_formulas]
+    norm_products = [f.upper() for f in product_formulas]
 
     # --- KIỂM TRA 1: HÓA TRỊ & CHẤT KHÔNG TỒN TẠI (WHITELIST & INVALID LIST) ---
     all_substances = reactant_formulas + product_formulas
@@ -536,7 +482,6 @@ def check_equation_pedagogy(raw_equation: str) -> Dict[str, Any]:
 
             elif rule.get("error_type") == "no_reaction":
                 res["is_correct"] = False
-                res["no_reaction"] = True
                 res["errors"].append({
                     "type": "no_reaction",
                     "message": f"🔴 Không có phản ứng: {rule['reason']}",

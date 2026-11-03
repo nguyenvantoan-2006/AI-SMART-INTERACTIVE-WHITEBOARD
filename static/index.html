@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="style.css?v=20261031_fontsize">
+    <link rel="stylesheet" href="style.css?v=20261027_retry">
 </head>
 <body>
     <div class="app-layout" id="app-layout">
@@ -29,17 +29,13 @@
         <!-- Voice Recorder Popup -->
         <!-- Voice Recorder Popup (Chỉ thực hiện khi bấm Gửi) -->
         <div id="voice-recorder-popup" class="voice-recorder-popup hidden">
-            <div class="vr-mode" id="vr-mode" role="radiogroup" aria-label="Chế độ Micro">
-                <button class="vr-mode-btn" data-mode="dictate" role="radio" title="Chép nguyên văn lời đọc lên bảng">📝 Ghi lên bảng</button>
-                <button class="vr-mode-btn" data-mode="command" role="radio" title="Ra lệnh cho bảng hoặc hỏi AI">💬 Ra lệnh / Hỏi AI</button>
-            </div>
             <button class="vr-action-btn" id="vr-btn-delete" title="Hủy bỏ (Esc)"><i class="fas fa-times"></i></button>
             <button class="vr-action-btn vr-mic-btn" id="vr-btn-mic" title="Bật/Tắt thu âm giọng nói"><i class="fas fa-microphone"></i></button>
             <div class="vr-center">
                 <div class="vr-waves" id="vr-waves">
                     <div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div><div class="vr-bar"></div>
                 </div>
-                <textarea id="vr-transcript-input" class="vr-transcript-input" rows="1" placeholder="Đang lắng nghe..."></textarea>
+                <input type="text" id="vr-transcript-input" class="vr-transcript-input" placeholder="Đang lắng nghe...">
                 <span id="vr-time" class="vr-time">00:00</span>
             </div>
             <button class="vr-btn-submit" id="vr-btn-submit" title="Gửi thực hiện lệnh (Enter)">
@@ -99,7 +95,6 @@
                 <button id="color-palette-btn" class="color-palette-btn" title="Bảng màu">
                     <span id="color-current-dot" class="color-current-dot" style="background:#ffffff"></span>
                 </button>
-                <button class="tool-btn font-size-btn" id="btn-font-size" title="Cỡ chữ (chữ đọc bằng Micro, làm đẹp chữ, thêm chữ)">Aa</button>
             </div>
 
 
@@ -153,7 +148,7 @@
                             <button class="quiz-chip" data-val="thong_hieu">Thông hiểu</button>
                             <button class="quiz-chip" data-val="van_dung">Vận dụng</button>
                             <button class="quiz-chip" data-val="van_dung_cao">Vận dụng cao</button>
-                            <button class="quiz-chip active" data-val="mixed">Ma trận 4 mức (40-30-20-10)</button>
+                            <button class="quiz-chip active" data-val="mixed">Trộn các mức</button>
                         </div>
                     </div>
                 </div>
@@ -174,8 +169,6 @@
                 <div class="quiz-toolbar" id="quiz-toolbar">
                     <span class="quiz-grip" title="Kéo để di chuyển khung câu hỏi"><i class="fas fa-grip-horizontal"></i> Kéo để di chuyển</span>
                     <div class="quiz-size-tools">
-                        <button class="quiz-tool" id="quiz-export-word-direct" title="Xuất đề thi ra file Word (.docx)"><i class="fas fa-file-word"></i> Word</button>
-                        <button class="quiz-tool" id="quiz-export-pdf-direct" title="In hoặc lưu đề thi dạng PDF"><i class="fas fa-print"></i> In / PDF</button>
                         <button class="quiz-tool" id="quiz-font-dec" title="Thu nhỏ chữ">A−</button>
                         <span class="quiz-font-val" id="quiz-font-val">100%</span>
                         <button class="quiz-tool" id="quiz-font-inc" title="Phóng to chữ">A+</button>
@@ -213,29 +206,11 @@
                 </div>
                 <div class="quiz-review" id="quiz-review"></div>
                 <div class="quiz-result-actions">
-                    <button id="quiz-export-word-btn" class="quiz-btn quiz-btn-info"><i class="fas fa-file-word"></i> Xuất Word (.docx)</button>
-                    <button id="quiz-export-pdf-btn" class="quiz-btn quiz-btn-secondary"><i class="fas fa-print"></i> In / Lưu PDF</button>
                     <button id="quiz-retry-btn" class="quiz-btn quiz-btn-primary"><i class="fas fa-redo"></i> Làm lại</button>
                     <button id="quiz-exit-btn" class="quiz-btn quiz-btn-ghost"><i class="fas fa-times"></i> Đóng</button>
                 </div>
             </div>
         </div>
-    </div>
-
-    <!-- Cỡ chữ (mở từ nút "Aa" ở thanh công cụ dưới) -->
-    <div id="font-size-pop" class="brush-size-pop font-size-pop hidden">
-        <div class="brush-pop-title">Cỡ chữ <b id="font-size-val">56</b></div>
-        <div class="font-size-presets">
-            <button type="button" class="font-size-preset" data-size="32">Nhỏ</button>
-            <button type="button" class="font-size-preset" data-size="44">Vừa</button>
-            <button type="button" class="font-size-preset" data-size="56">Lớn</button>
-            <button type="button" class="font-size-preset" data-size="72">Rất lớn</button>
-        </div>
-        <div class="font-size-step">
-            <button type="button" id="font-size-dec" title="Nhỏ hơn 4px">A−</button>
-            <button type="button" id="font-size-inc" title="Lớn hơn 4px">A+</button>
-        </div>
-        <div class="font-size-hint" id="font-size-hint"></div>
     </div>
 
     <!-- Cỡ nét bút (mở bằng cách bấm đúp vào nút bút ở thanh công cụ dưới) -->
@@ -336,12 +311,11 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/function-plot/1.23.0/function-plot.js"></script>
     <script src="chem_visuals.js?v=35"></script>
-    <script src="script.js?v=20261031_voicequiz"></script>
+    <script src="script.js?v=20261020_micv2"></script>
     <script src="virtual_lab.js?v=7"></script>
-    <script src="collision_sim.js?v=1"></script>
     <script src="exercise_lib.js?v=5"></script>
     <!-- Page Manager: multi-page + OCR dedup + i18n (loads AFTER script.js) -->
-    <script src="page_manager.js?v=20261031_fontsize"></script>
+    <script src="page_manager.js?v=20261019_textmove2"></script>
     <script src="lesson_export.js?v=3"></script>
     <script src="calculator.js?v=3"></script>
     <!-- Hand Tracking Module -->

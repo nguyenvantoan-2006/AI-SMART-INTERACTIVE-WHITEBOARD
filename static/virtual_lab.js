@@ -39,9 +39,6 @@ function _labParseEquation(equation, reactants, products) {
     };
     if (!eq.includes('→')) return { reactants: side('', reactants), products: side('', products) };
     const [l, r] = eq.split('→');
-    if (/không phản ứng|khong phan ung/i.test(r)) {
-        return { reactants: side(l, reactants), products: [] };
-    }
     return { reactants: side(l, reactants), products: side(r, products) };
 }
 
@@ -112,11 +109,6 @@ const LAB_RATIO_RULES = [
 
 // Tính trạng thái sau phản ứng theo phương trình (chất hết / dư / sản phẩm)
 function _labCompute(parsed, nInit) {
-    if (!parsed.products || parsed.products.length === 0) {
-        const after = {};
-        parsed.reactants.forEach(r => { after[r.formula] = nInit[r.formula] || 0; });
-        return { after, ratio: null, noReaction: true };
-    }
     const keys = parsed.reactants.map(r => _labKey(r.formula));
     for (const rule of LAB_RATIO_RULES) {
         const m = rule.match(keys);
