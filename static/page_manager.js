@@ -832,10 +832,11 @@ window.addOCRTextObject = function(rawText, x, y, w, h, confidence = 0.96, toRem
     });
   }
 
-  // Calculate proportional font size
+  // Cỡ chữ theo nút "Aa" (script.js); không có thì tính theo kích thước nét viết tay
   const textLen = Math.max(1, formattedText.length);
   let computedFontSize = Math.sqrt((strokeW * strokeH) / (0.5 * textLen)) * 0.85;
   computedFontSize = Math.max(20, Math.min(computedFontSize, strokeH * 0.9, 48));
+  if (typeof window.getBoardFontSize === 'function') computedFontSize = window.getBoardFontSize();
 
   const textFill = (typeof currentColor !== 'undefined' && currentColor && currentColor !== '#0a1628')
     ? currentColor
@@ -855,6 +856,11 @@ window.addOCRTextObject = function(rawText, x, y, w, h, confidence = 0.96, toRem
       ocrId: candidateItem.id
     }
   });
+
+  // Khung rộng theo cỡ chữ (chữ to không bị xuống dòng vụn trong khung hẹp bằng nét viết tay), không vượt mép phải bảng
+  if (typeof fitTextboxWidth === 'function') {
+    fitTextboxWidth(textObj, Math.max(120, Math.min(computedFontSize * 28, canvas.getWidth() - posX - 24)));
+  }
 
   candidateItem._fabricObj = textObj;
   makeOCRTextDraggable(textObj, candidateItem);
