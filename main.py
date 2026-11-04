@@ -1428,11 +1428,11 @@ Output strictly valid JSON (no markdown, no backticks):
             fallback_used = False
             res = None
             if req.get("mode", "deep") == "deep":
-                # Chế độ "Phân tích sâu" (mặc định): nhiều agent (agents.py). Hóa học → Orchestrator tự gửi kết quả
-                # theo đợt; domain khác → trả kết quả VisionAgent để dùng lại luồng hiển thị bên dưới.
+                # Mặc định: nhiều agent (agents.py). Hóa học → Orchestrator tự gửi kết quả;
+                # domain khác → trả kết quả VisionAgent để dùng lại luồng hiển thị bên dưới.
                 from agents import Orchestrator
                 try:
-                    res = await Orchestrator(websocket.send_json, send_log).run(img, req)
+                    res = await Orchestrator(websocket.send_json).run(img, req)
                     if res is None:
                         return
                 except WebSocketDisconnect:
@@ -1440,13 +1440,13 @@ Output strictly valid JSON (no markdown, no backticks):
                 except Exception as e:
                     # Hết lượt API / quá thời gian / lỗi agent → chạy lại bằng SuperAgent để giáo viên vẫn có kết quả
                     print(f"[FALLBACK] Chế độ sâu lỗi: {e!r} → SuperAgent")
-                    await send_log("Orchestrator", f"⚠️ Chế độ sâu gặp lỗi ({str(e)[:100]}) → chuyển sang chế độ dự phòng (SuperAgent)")
                     fallback_used = True
                     t_start = time.perf_counter()
             if res is None:
                 # SuperAgent 1 lần gọi AI: chế độ dự phòng (hoặc khi gửi mode="fast", vd benchmark)
+                from agents import print_agent_log
                 agent = SuperAgent()
-                res = await agent.process(img, send_log)
+                res = await agent.process(img, print_agent_log)
                 print(f"[TIMING] SuperAgent     {(time.perf_counter() - t_start) * 1000:7.0f} ms  | AI calls: 1"
                       f"{' (dự phòng)' if fallback_used else ''}")
             domain = res.get("domain", "general")
@@ -1523,7 +1523,6 @@ Output strictly valid JSON (no markdown, no backticks):
                 # Gửi toàn bộ kết quả 1 lần duy nhất
                 await websocket.send_json({
                     "type":         "result_chemistry",
-                    "fallback":     fallback_used,
                     "equation":     res.get("equation", ""),
                     "reactants":    reactants,
                     "products":     products,

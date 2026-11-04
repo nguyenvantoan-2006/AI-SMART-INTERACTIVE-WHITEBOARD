@@ -1,17 +1,16 @@
 """
-HỆ THỐNG NHIỀU AGENT — chế độ "Phân tích sâu" cho phương trình hóa học.
+HỆ THỐNG NHIỀU AGENT cho Trực quan hóa phương trình hóa học.
 
 Luồng (Orchestrator điều phối bằng code, không tốn lượt gọi AI để định tuyến):
 
-    VisionAgent (1 AI) ──► SolverAgent (0-1 AI) ──► VerifierAgent (0 AI)
+    VisionAgent (1 AI) ──► SolverAgent (0-1 AI) ──► VerifierAgent (0 AI) ──► gửi phương trình + an toàn
                                ▲                         │ sai → gửi lỗi lại, tối đa 2 lần
                                └─────────────────────────┘
-                                                         │ đúng → gửi phương trình + an toàn NGAY
-                                                         ▼
-                                  asyncio.gather( TutorAgent (1 AI + TTS), QuizAgent (1 AI) )
 
 Gặp lỗi trước khi có phương trình (hết lượt API, quá thời gian, lỗi agent) → ném AgentFailure,
-main.py tự chạy lại bằng SuperAgent (chế độ dự phòng). Lỗi ở Tutor/Quiz không lùi vì phương trình đã gửi rồi.
+main.py tự chạy lại bằng SuperAgent (chế độ dự phòng).
+Nhật ký agent chỉ in ra terminal, không gửi lên giao diện.
+TutorAgent, QuizAgent: Orchestrator không còn chạy để tiết kiệm lượt API.
 """
 import asyncio
 import re
@@ -21,6 +20,11 @@ from io import BytesIO
 
 class AgentFailure(Exception):
     """Chế độ sâu không ra được phương trình → main.py chuyển sang SuperAgent."""
+
+
+async def print_agent_log(agent: str, message: str):
+    """Nhật ký agent: in ra terminal để theo dõi, không gửi lên giao diện."""
+    print(f"[AGENT] {agent}: {message}", flush=True)
 
 
 def _m():
@@ -359,9 +363,9 @@ class Orchestrator:
     MAX_FIX_ROUNDS = 2
     PHASE1_TIMEOUT = 20.0   # giây — quá mức này chưa có phương trình thì lùi về SuperAgent
 
-    def __init__(self, send_json, send_log):
+    def __init__(self, send_json):
         self.send_json = send_json
-        self.send_log = send_log
+        self.send_log = print_agent_log
         self.timer = AgentTimer()
 
     async def run(self, img, req: dict):
@@ -370,7 +374,7 @@ class Orchestrator:
         Lỗi trước khi có phương trình → AgentFailure."""
         M = _m()
         log = self.send_log
-        await log("Orchestrator", "🧭 Chế độ Phân tích sâu: Vision → Solver ⇄ Verifier → Tutor ‖ Quiz")
+        await log("Orchestrator", "🧭 Vision → Solver ⇄ Verifier")
 
         try:
             vision, sol, ver, rounds = await asyncio.wait_for(self._solve(img, req), timeout=self.PHASE1_TIMEOUT)
@@ -411,13 +415,12 @@ class Orchestrator:
         return vision, sol, ver, rounds
 
     async def _send_results(self, M, vision, sol, ver, rounds):
-        log = self.send_log
-        # ── ĐỢT 1: phương trình + an toàn, gửi ngay ──
         safety = ver["safety"]
         sensory = M._detect_sound_and_olfactory(sol["reactants"], sol["products"])
+        self.timer.mark("Có phương trình")
+        # Client đóng kết nối ngay khi nhận message này, nên đây phải là message cuối (kèm luôn số đo thời gian)
         await self.send_json({
             "type": "result_chemistry",
-            "deep_mode": True,
             "equation": sol["equation"],
             "reactants": sol["reactants"],
             "products": sol["products"],
@@ -431,6 +434,7 @@ class Orchestrator:
             "molar_masses": sol["molar_masses"],
             "sound_type": sensory.get("sound_type", "none"),
             "olfactory": sensory.get("olfactory"),
+            "timing": self.timer.summary(),
             "verification": {"ok": ver["ok"], "fix_rounds": rounds, "written": vision.get("equation", ""),
                              "errors": [e["message"] for e in ver["check"]["errors"]]},
             "safety": {
@@ -443,22 +447,6 @@ class Orchestrator:
                 "summary": safety.get("reason", ""),
                 "warnings": [],
                 "_curriculum": "high_school",
-                "_pedagogy_loading": True,
+                "_pedagogy_loading": False,
             },
         })
-        self.timer.mark("Đợt 1 (phương trình)")
-        await log("Orchestrator", "📤 Đã gửi phương trình + an toàn → chạy song song TutorAgent ‖ QuizAgent")
-
-        # ── ĐỢT 2: lời giảng + quiz song song ──
-        results = await asyncio.gather(
-            TutorAgent().run(sol, safety, self.send_json, log, self.timer),
-            QuizAgent().run(sol, self.send_json, log, self.timer),
-            return_exceptions=True,
-        )
-        for name, r in zip(("TutorAgent", "QuizAgent"), results):
-            if isinstance(r, Exception):
-                print(f"[Orchestrator] {name} lỗi: {r!r}")
-                await log(name, "⚠️ Lỗi, bỏ qua phần này")
-        self.timer.mark("Hoàn tất")
-        await self.send_json({"type": "agent_done", "timing": self.timer.summary()})
-        return None

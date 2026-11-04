@@ -67,7 +67,6 @@ class Recorder:
         self.events.setdefault(msg.get("type"), time.perf_counter() - self.t0)
         if msg.get("type") == "result_chemistry":
             self.final = msg
-        if msg.get("type") == "agent_done":
             self.timing = msg.get("timing")
 
     async def send_log(self, agent, message):
@@ -84,7 +83,7 @@ async def run_fast(M, img):
 async def run_deep(M, img):
     from agents import Orchestrator
     rec = Recorder()
-    orch = Orchestrator(rec.send_json, rec.send_log)
+    orch = Orchestrator(rec.send_json)
     res = await orch.run(img, {})
     total = time.perf_counter() - rec.t0
     if res is not None:   # không phải hóa học
@@ -92,8 +91,6 @@ async def run_deep(M, img):
     timing = getattr(rec, "timing", {}) or {}
     return {
         "first": rec.events.get("result_chemistry", total),
-        "tutor": rec.events.get("result_agent_tutor"),
-        "quiz": rec.events.get("result_agent_quiz"),
         "total": total,
         "ai_calls": timing.get("ai_calls", 0),
         "agents": {a["agent"]: a["ms"] for a in timing.get("agents", [])},
@@ -171,15 +168,14 @@ async def main():
         return f"{statistics.median(vals):.2f}s" if vals else "—"
 
     print("\n" + "=" * 96)
-    print(f"{'Ảnh':<28}{'Chế độ':<8}{'Có PT (median)':>16}{'Lời giảng':>12}{'Quiz':>10}{'Xong':>10}{'AI':>6}  Ghi chú")
+    print(f"{'Ảnh':<28}{'Chế độ':<8}{'Có PT (median)':>16}{'Xong':>10}{'AI':>6}  Ghi chú")
     print("-" * 96)
     for name, _, note in cases:
         for mode in ("fast", "deep"):
             rs = [r for r in rows if r["case"] == name and r["mode"] == mode]
             if not rs:
                 continue
-            print(f"{name:<28}{mode:<8}{med(r['first'] for r in rs):>16}{med(r.get('tutor') for r in rs):>12}"
-                  f"{med(r.get('quiz') for r in rs):>10}{med(r['total'] for r in rs):>10}"
+            print(f"{name:<28}{mode:<8}{med(r['first'] for r in rs):>16}{med(r['total'] for r in rs):>10}"
                   f"{statistics.median(r['ai_calls'] for r in rs):>6.0f}  {note if mode == 'deep' else ''}")
     print("=" * 96)
     for mode in ("fast", "deep"):
