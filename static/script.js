@@ -534,9 +534,10 @@ document.addEventListener('pointerdown', (e) => {
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleBrushPop(false); });
 window.addEventListener('resize', () => toggleBrushPop(false));
 
-// ---- CỠ CHỮ (nút "Aa"): chưa chọn chữ nào = cỡ cho chữ thêm mới; đang chọn chữ = đổi cỡ ngay các chữ đó ----
+// ---- CỠ CHỮ (nút "Aa"): chưa chọn gì = cỡ cho chữ thêm mới; đang chọn chữ/nét viết tay = đổi cỡ ngay các đối tượng đó ----
 const FONT_SIZE_KEY = 'boardFontSize';
 const FONT_SIZE_MIN = 20, FONT_SIZE_MAX = 120, FONT_SIZE_STEP = 4, FONT_SIZE_DEFAULT = 56;
+const HANDWRITING_STEP = 0.1;   // A− / A+ với nét viết tay: thu nhỏ / phóng to 10% mỗi lần
 const TEXT_OBJ_TYPES = new Set(['textbox', 'i-text', 'text']);
 const clampFontSize = (v) => Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, Math.round(v)));
 let boardFontSize = (() => {
@@ -555,6 +556,18 @@ function getSelectedTextObjects() {
     if (lastLassoCrop) return getObjectsInLasso(lastLassoCrop).filter(o => TEXT_OBJ_TYPES.has(o.type));
     return [];
 }
+// Nút Aa đổi cỡ: chữ/nét được bấm chọn trên bảng, hoặc nằm trong vùng khoanh
+function getSelectedBoardObjects() {
+    const isResizable = o => TEXT_OBJ_TYPES.has(o.type) || o.type === 'path';
+    const active = canvas.getActiveObjects().filter(isResizable);
+    if (active.length) return active;
+    if (!lastLassoCrop) return [];
+    // Sau khi đổi cỡ giữ đúng nhóm đã chọn: khung khoanh đổi theo nội dung, có thể chạm tới đối tượng bên cạnh
+    const onBoard = canvas.getObjects();
+    const kept = lastLassoCrop.resizedObjs;
+    if (kept && kept.every(o => onBoard.includes(o))) return kept;
+    return getObjectsInLasso(lastLassoCrop).filter(isResizable);
+}
 const effectiveFontSize = (o) => Math.round(o.fontSize * (o.scaleY || 1));
 
 // Khung chữ vừa nội dung theo cỡ chữ: dòng dài tối đa ~28 lần cỡ chữ (~50 ký tự) và không vượt mép phải bảng
@@ -566,15 +579,65 @@ function fitTextboxWidth(obj, maxWidth) {
     obj.initDimensions();
 }
 
-function resizeTextObjects(objs, size) {
-    const act = canvas.getActiveObject();
-    if (act && act.type === 'activeSelection') canvas.discardActiveObject();   // tọa độ trong nhóm là tương đối
-    const before = objs.map(o => o.getBoundingRect(true, true));
-    objs.forEach(o => {
+// Khung bao của một nhóm đối tượng (tọa độ canvas)
+function _groupRect(objs) {
+    const rects = objs.map(o => o.getBoundingRect(true, true));
+    const left = Math.min(...rects.map(r => r.left)), top = Math.min(...rects.map(r => r.top));
+    const right = Math.max(...rects.map(r => r.left + r.width)), bottom = Math.max(...rects.map(r => r.top + r.height));
+    return { left, top, width: right - left, height: bottom - top };
+}
+
+// Chiều cao chữ viết tay: gộp các nét chồng nhau theo chiều dọc thành từng dòng, lấy trung vị chiều cao các dòng
+function estimateHandwritingSize(paths) {
+    const rects = paths.map(o => o.getBoundingRect(true, true)).sort((a, b) => a.top - b.top);
+    const lines = [];
+    rects.forEach(r => {
+        const line = lines[lines.length - 1];
+        const bottom = r.top + r.height;
+        // Cùng dòng nếu chồng lên dòng ≥30% chiều cao của phần thấp hơn (đuôi chữ g, y không nối hai dòng lại)
+        if (line && Math.min(line.bottom, bottom) - r.top >= 0.3 * Math.min(line.bottom - line.top, r.height)) {
+            line.bottom = Math.max(line.bottom, bottom);
+        } else {
+            lines.push({ top: r.top, bottom });
+        }
+    });
+    const heights = lines.map(l => l.bottom - l.top).sort((a, b) => a - b);
+    return heights[Math.floor(heights.length / 2)];
+}
+
+// Phóng nhóm nét quanh góc trên-trái, giữ nguyên độ dày nét (strokeUniform)
+function _scalePaths(paths, factor) {
+    const anchor = _groupRect(paths);
+    paths.forEach(o => {
+        o.set({
+            strokeUniform: true,
+            left: anchor.left + (o.left - anchor.left) * factor,
+            top: anchor.top + (o.top - anchor.top) * factor,
+            scaleX: (o.scaleX || 1) * factor,
+            scaleY: (o.scaleY || 1) * factor,
+        });
+        o.setCoords();
+    });
+    // Nét không phóng theo độ dày nên khung lệch chút: đặt lại đúng góc cũ
+    const moved = _groupRect(paths);
+    paths.forEach(o => {
+        o.set({ left: o.left + anchor.left - moved.left, top: o.top + anchor.top - moved.top });
+        o.setCoords();
+    });
+}
+
+// Hệ số phóng tối đa để nhóm nét vẫn nằm trong bảng
+function _maxPathFactor(paths) {
+    const r = _groupRect(paths);
+    return Math.min((canvas.getWidth() - r.left) / r.width, (canvas.getHeight() - r.top) / r.height);
+}
+
+function _resizeTexts(texts, size) {
+    texts.forEach(o => {
         if (o.type === 'textbox') {
             // Giữ nguyên chỗ xuống dòng: khung rộng ra cùng tỉ lệ với cỡ chữ (không vượt mép phải bảng)
             const ratio = size / effectiveFontSize(o);
-            const maxW = Math.max(120, canvas.getWidth() - before[objs.indexOf(o)].left - TEXT_PLACE_MARGIN);
+            const maxW = Math.max(120, canvas.getWidth() - o.getBoundingRect(true, true).left - TEXT_PLACE_MARGIN);
             const newW = Math.min(maxW, o.width * (o.scaleX || 1) * ratio);
             o.set({ fontSize: size, scaleX: 1, scaleY: 1, width: newW });
             o.initDimensions();
@@ -583,21 +646,64 @@ function resizeTextObjects(objs, size) {
         }
         o.setCoords();
     });
-    // Các đoạn được chọn xếp chồng nhau: đoạn phía dưới dời theo phần cao thêm của các đoạn phía trên → không đè nhau
-    const after = objs.map(o => o.getBoundingRect(true, true));
-    objs.forEach((o, i) => {
+}
+
+let _fontLimitReached = false;   // Lần đổi cỡ vừa rồi bị chặn vì chạm mép bảng
+
+// Đổi cỡ phần đang chọn. pathFactor: hệ số cho nét viết tay (A−/A+); null = phóng nét tới chiều cao textSize (các mức cỡ)
+function resizeBoardSelection(objs, textSize, pathFactor) {
+    const act = canvas.getActiveObject();
+    if (act && act.type === 'activeSelection') canvas.discardActiveObject();   // tọa độ trong nhóm là tương đối
+    const texts = objs.filter(o => TEXT_OBJ_TYPES.has(o.type));
+    const paths = objs.filter(o => o.type === 'path');
+    // Mỗi đoạn chữ là 1 khối, cả nhóm nét là 1 khối (nét giữ nguyên vị trí tương đối với nhau)
+    const blocks = texts.map(o => [o]);
+    if (paths.length) blocks.push(paths);
+    const before = blocks.map(_groupRect);
+
+    _resizeTexts(texts, textSize);
+    _fontLimitReached = false;
+    if (paths.length) {
+        // Khung nét gồm cả độ dày không phóng theo, nên các mức cỡ cần chỉnh lần 2 cho sát
+        for (let pass = 0; pass < (pathFactor === null ? 2 : 1); pass++) {
+            const wanted = pathFactor === null ? textSize / estimateHandwritingSize(paths) : pathFactor;
+            const limit = _maxPathFactor(paths);
+            if (wanted > limit) _fontLimitReached = true;
+            _scalePaths(paths, Math.min(wanted, limit));
+        }
+    }
+
+    // Các khối xếp chồng nhau: khối phía dưới dời theo phần cao thêm của các khối phía trên → không đè nhau
+    const after = blocks.map(_groupRect);
+    blocks.forEach((block, i) => {
         const bi = before[i];
         let shift = 0;
-        objs.forEach((_, j) => {
+        blocks.forEach((_, j) => {
             const bj = before[j];
             const above = j !== i && bj.top + bj.height <= bi.top + 1;
             const sameColumn = bj.left < bi.left + bi.width && bi.left < bj.left + bj.width;
             if (above && sameColumn) shift += after[j].height - bj.height;
         });
-        if (shift) { o.set('top', o.top + shift); o.setCoords(); }
+        if (shift) block.forEach(o => { o.set('top', o.top + shift); o.setCoords(); });
     });
-    canvas.requestRenderAll();
+    canvas.renderAll();
+    if (lastLassoCrop) _refitLassoTo(objs);
     objs.forEach(o => canvas.fire('object:modified', { target: o }));   // lưu hoàn tác (saveState gộp thành 1 bước)
+}
+
+// Khung khoanh ôm lại nội dung sau khi đổi cỡ và cập nhật ảnh gửi AI
+function _refitLassoTo(objs) {
+    const content = getContentBounds(objs);
+    if (!content) return;
+    const PAD = 10;
+    const x = Math.max(0, content.x - PAD), y = Math.max(0, content.y - PAD);
+    const w = Math.min(canvasEl.clientWidth, content.x + content.w + PAD) - x;
+    const h = Math.min(canvasEl.clientHeight, content.y + content.h + PAD) - y;
+    lassoStartX = x; lassoEndX = x + w;
+    lassoStartY = y; lassoEndY = y + h;
+    updateLassoOverlay();
+    lassoOverlay?.classList.add('movable');
+    Object.assign(lastLassoCrop, { x, y, w, h, dataURL: cropCanvas(x, y, w, h), resizedObjs: objs });
 }
 
 const fontBtn = document.getElementById('btn-font-size');
@@ -605,13 +711,19 @@ const fontPop = document.getElementById('font-size-pop');
 
 function refreshFontPop() {
     if (!fontPop || fontPop.classList.contains('hidden')) return;
-    const sel = getSelectedTextObjects();
-    const size = sel.length ? effectiveFontSize(sel[0]) : boardFontSize;
+    const sel = getSelectedBoardObjects();
+    const texts = sel.filter(o => TEXT_OBJ_TYPES.has(o.type));
+    const paths = sel.filter(o => o.type === 'path');
+    const size = texts.length ? effectiveFontSize(texts[0])
+        : paths.length ? Math.round(estimateHandwritingSize(paths)) : boardFontSize;
     document.getElementById('font-size-val').textContent = size;
     fontPop.querySelectorAll('.font-size-preset').forEach(b => b.classList.toggle('active', +b.dataset.size === size));
     const hint = document.getElementById('font-size-hint');
     if (sel.length) {
-        hint.innerHTML = `Đang đổi cỡ <b>${sel.length}</b> đoạn chữ đang chọn · <button type="button" class="font-size-unselect">Dùng cho chữ mới</button>`;
+        const parts = [];
+        if (texts.length) parts.push(`<b>${texts.length}</b> đoạn chữ`);
+        if (paths.length) parts.push(`<b>${paths.length}</b> nét viết tay`);
+        hint.innerHTML = `Đang đổi cỡ ${parts.join(' và ')} đang chọn${_fontLimitReached ? ' (đã chạm mép bảng)' : ''} · <button type="button" class="font-size-unselect">Dùng cho chữ mới</button>`;
         hint.querySelector('.font-size-unselect').addEventListener('click', () => {
             canvas.discardActiveObject();
             if (lastLassoCrop && typeof clearLasso === 'function') clearLasso();
@@ -625,13 +737,26 @@ function refreshFontPop() {
 
 function applyFontSize(size) {
     size = clampFontSize(size);
-    const sel = getSelectedTextObjects();
+    const sel = getSelectedBoardObjects();
     if (sel.length) {
-        resizeTextObjects(sel, size);
+        resizeBoardSelection(sel, size, null);
     } else {
         boardFontSize = size;
         try { localStorage.setItem(FONT_SIZE_KEY, String(size)); } catch { /* bỏ qua */ }
     }
+    refreshFontPop();
+}
+
+// A− / A+: chữ đổi mỗi nấc 4px, nét viết tay đổi 10%
+function stepFontSize(direction) {
+    const sel = getSelectedBoardObjects();
+    if (!sel.some(o => o.type === 'path')) {
+        applyFontSize(+document.getElementById('font-size-val').textContent + direction * FONT_SIZE_STEP);
+        return;
+    }
+    const firstText = sel.find(o => TEXT_OBJ_TYPES.has(o.type));
+    const textSize = firstText ? clampFontSize(effectiveFontSize(firstText) + direction * FONT_SIZE_STEP) : 0;
+    resizeBoardSelection(sel, textSize, 1 + direction * HANDWRITING_STEP);
     refreshFontPop();
 }
 
@@ -650,8 +775,8 @@ function toggleFontPop(show) {
 
 fontBtn?.addEventListener('click', (e) => { e.stopPropagation(); toggleFontPop(); });
 fontPop?.querySelectorAll('.font-size-preset').forEach(b => b.addEventListener('click', () => applyFontSize(+b.dataset.size)));
-document.getElementById('font-size-dec')?.addEventListener('click', () => applyFontSize(+document.getElementById('font-size-val').textContent - FONT_SIZE_STEP));
-document.getElementById('font-size-inc')?.addEventListener('click', () => applyFontSize(+document.getElementById('font-size-val').textContent + FONT_SIZE_STEP));
+document.getElementById('font-size-dec')?.addEventListener('click', () => stepFontSize(-1));
+document.getElementById('font-size-inc')?.addEventListener('click', () => stepFontSize(1));
 ['selection:created', 'selection:updated', 'selection:cleared'].forEach(ev => canvas.on(ev, refreshFontPop));
 document.addEventListener('pointerdown', (e) => {
     if (!fontPop || fontPop.classList.contains('hidden')) return;
