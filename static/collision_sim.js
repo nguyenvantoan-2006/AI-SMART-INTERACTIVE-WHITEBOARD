@@ -85,30 +85,87 @@
         }
     };
 
-    function createParticleMesh(type, radius, colorHex, glowHex) {
+    function _drawFormulaCanvas(text, colorHex, bgFill) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 160;
+        canvas.height = 70;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, 160, 70);
+
+        // Nền pill bo tròn phát sáng nhẹ
+        ctx.fillStyle = bgFill || 'rgba(15, 23, 42, 0.78)';
+        ctx.beginPath();
+        if (typeof ctx.roundRect === 'function') {
+            ctx.roundRect(8, 8, 144, 54, 16);
+        } else {
+            ctx.rect(8, 8, 144, 54);
+        }
+        ctx.fill();
+        ctx.strokeStyle = colorHex;
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // Chữ công thức (Hóa học)
+        ctx.font = 'bold 28px "Segoe UI", Arial, sans-serif';
+        ctx.fillStyle = colorHex;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = colorHex;
+        ctx.shadowBlur = 8;
+        ctx.fillText(text, 80, 35);
+        ctx.shadowBlur = 0;
+
+        return canvas;
+    }
+
+    function createParticleMesh(type, radius, colorHex, glowHex, formulaText) {
         const group = new THREE.Group();
-        // Lõi cầu
-        const geo = new THREE.SphereGeometry(radius, 20, 20);
+        // Lõi cầu PBR kim loại/phi kim
+        const geo = new THREE.SphereGeometry(radius, 24, 24);
         const mat = new THREE.MeshStandardMaterial({
             color: colorHex,
-            roughness: 0.2,
-            metalness: 0.6,
+            roughness: 0.18,
+            metalness: 0.65,
             emissive: glowHex,
-            emissiveIntensity: 0.35
+            emissiveIntensity: 0.38
         });
         const mesh = new THREE.Mesh(geo, mat);
         group.add(mesh);
 
         // Vỏ hào quang phát sáng
-        const haloGeo = new THREE.SphereGeometry(radius * 1.25, 14, 14);
+        const haloGeo = new THREE.SphereGeometry(radius * 1.25, 16, 16);
         const haloMat = new THREE.MeshBasicMaterial({
             color: glowHex,
             transparent: true,
-            opacity: 0.22,
+            opacity: 0.25,
             wireframe: false
         });
         const halo = new THREE.Mesh(haloGeo, haloMat);
         group.add(halo);
+
+        // Nhãn công thức hóa học bay trên đỉnh hạt (xoay theo camera)
+        const hexStr = '#' + colorHex.toString(16).padStart(6, '0');
+        const textCanvas = _drawFormulaCanvas(formulaText || type, hexStr);
+        const texture = new THREE.CanvasTexture(textCanvas);
+        texture.minFilter = THREE.LinearFilter;
+        const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthWrite: false });
+        const sprite = new THREE.Sprite(spriteMat);
+        sprite.scale.set(1.8, 0.8, 1);
+        sprite.position.set(0, radius + 0.65, 0);
+        group.add(sprite);
+
+        group.labelSprite = sprite;
+        group.setFormula = function(newFormula, newHexStr, hexNum) {
+            const newCanvas = _drawFormulaCanvas(newFormula, newHexStr, 'rgba(6, 78, 59, 0.88)');
+            sprite.material.map.dispose();
+            sprite.material.map = new THREE.CanvasTexture(newCanvas);
+            sprite.material.map.needsUpdate = true;
+            if (hexNum !== undefined) {
+                mesh.material.color.setHex(hexNum);
+                mesh.material.emissive.setHex(hexNum);
+                halo.material.color.setHex(hexNum);
+            }
+        };
 
         return group;
     }
@@ -337,13 +394,17 @@
         const half = (BOX_SIZE / 2) - 1.2;
         const baseSpeed = Math.sqrt(currentTemp / 300) * 0.08;
 
+        const r1 = (currentContext.reactants && currentContext.reactants[0]) || 'A';
+        const r2 = (currentContext.reactants && currentContext.reactants[1]) || 'B';
+
         for (let i = 0; i < currentDensity; i++) {
             const isA = (i % 2 === 0);
             const radius = isA ? 0.65 : 0.85;
             const colorHex = isA ? 0x38bdf8 : 0xfb923c;
             const glowHex = isA ? 0x0284c7 : 0xea580c;
+            const formulaText = isA ? r1 : r2;
 
-            const mesh = createParticleMesh(isA ? 'A' : 'B', radius, colorHex, glowHex);
+            const mesh = createParticleMesh(isA ? 'A' : 'B', radius, colorHex, glowHex, formulaText);
             mesh.position.set(
                 (Math.random() - 0.5) * 2 * half,
                 (Math.random() - 0.5) * 2 * half,
@@ -566,16 +627,23 @@
                         const midPos = p1.mesh.position.clone().add(p2.mesh.position).multiplyScalar(0.5);
                         addSparkleBurst(midPos);
 
-                        // Biến hạt p1 thành hạt sản phẩm (xanh ngọc)
+                        // Biến hạt thành sản phẩm phản ứng (xanh ngọc) và cập nhật nhãn công thức
+                        const prod1 = (currentContext.products && currentContext.products[0]) || 'Sản phẩm';
+                        const prod2 = (currentContext.products && currentContext.products[1]) || prod1;
+
                         p1.role = 'product';
                         p1.type = 'Product';
-                        p1.mesh.children[0].material.color.setHex(0x10b981);
-                        p1.mesh.children[0].material.emissive.setHex(0x059669);
-                        p1.mesh.children[1].material.color.setHex(0x34d399);
+                        if (p1.mesh.setFormula) p1.mesh.setFormula(prod1, '#10b981', 0x10b981);
 
-                        // Đổi vận tốc sau giải phóng năng lượng
-                        p1.vx = -p1.vx * 1.1;
-                        p2.vx = -p2.vx * 1.1;
+                        p2.role = 'product';
+                        p2.type = 'Product';
+                        if (p2.mesh.setFormula) p2.mesh.setFormula(prod2, '#34d399', 0x059669);
+
+                        // Đổi vận tốc và tăng tốc nhẹ sau giải phóng năng lượng phản ứng
+                        p1.vx = -p1.vx * 1.25;
+                        p1.vy = -p1.vy * 1.25;
+                        p2.vx = -p2.vx * 1.25;
+                        p2.vy = -p2.vy * 1.25;
                     } else {
                         // VA CHẠM ĐÀN HỒI (Không đủ năng lượng hoặc cùng loại hạt)
                         elasticCollisions++;
@@ -643,6 +711,18 @@
         isNoReactionMode = Boolean(currentContext.isNoReaction);
 
         document.getElementById('collision-eq-text').textContent = currentContext.equation || 'Phản ứng Hóa học 3D';
+        
+        // Cập nhật chú thích bảng legend theo chất cụ thể
+        const r1 = (currentContext.reactants && currentContext.reactants[0]) || 'Chất A';
+        const r2 = (currentContext.reactants && currentContext.reactants[1]) || 'Chất B';
+        const prodNames = (currentContext.products && currentContext.products.join(' + ')) || 'Sản phẩm';
+        const legendItems = document.querySelectorAll('.collision-legend .legend-item');
+        if (legendItems.length >= 3) {
+            legendItems[0].innerHTML = `<b style="background:#38bdf8;"></b> ${r1} (Tham gia 1)`;
+            legendItems[1].innerHTML = `<b style="background:#fb923c;"></b> ${r2} (Tham gia 2)`;
+            legendItems[2].innerHTML = `<b style="background:#10b981;"></b> ${prodNames} (Sản phẩm)`;
+        }
+
         document.getElementById('collision-modal').classList.remove('hidden');
 
         totalCollisions = 0;

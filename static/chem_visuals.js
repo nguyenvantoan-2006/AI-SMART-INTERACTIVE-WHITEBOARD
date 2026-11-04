@@ -32,6 +32,7 @@ function stopChemAnim(containerId) {
     if (_chemRenderers.has(containerId)) {
         const item = _chemRenderers.get(containerId);
         if (item.animId) cancelAnimationFrame(item.animId);
+        if (item.interaction && item.interaction.dispose) item.interaction.dispose();
         if (item.scene) _disposeThreeHierarchy(item.scene);
         if (item.view && item.view.canvas.parentNode) item.view.canvas.parentNode.removeChild(item.view.canvas);
         _chemRenderers.delete(containerId);
@@ -466,20 +467,117 @@ function _addContactShadow(scene, box, strength = 0.55) {
     scene.add(mesh);
 }
 
-// Hoàn tất cảnh: canh camera, bóng đổ, chạy hoạt ảnh (lắc nhẹ thay vì quay tròn)
+// Điều khiển tương tác chuột & cảm ứng: Kéo để xoay 360°, cuộn chuột để phóng to / thu nhỏ
+function _attachCardInteraction(container, camera, group, baseDist) {
+    let isDragging = false;
+    let prevX = 0, prevY = 0;
+    let rotX = 0, rotY = 0;
+    let targetRotX = 0, targetRotY = 0;
+    let userInteracted = false;
+    let idleTimer = null;
+
+    container.style.cursor = 'grab';
+    container.setAttribute('title', '🖱️ Giữ chuột kéo để xoay 3D • Cuộn chuột để phóng to/thu nhỏ');
+
+    const onDown = (e) => {
+        isDragging = true;
+        userInteracted = true;
+        container.style.cursor = 'grabbing';
+        prevX = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+        prevY = e.clientY || (e.touches && e.touches[0].clientY) || 0;
+        if (idleTimer) clearTimeout(idleTimer);
+    };
+
+    const onMove = (e) => {
+        if (!isDragging) return;
+        const cx = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+        const cy = e.clientY || (e.touches && e.touches[0].clientY) || 0;
+        const dx = cx - prevX;
+        const dy = cy - prevY;
+        prevX = cx;
+        prevY = cy;
+
+        targetRotY += dx * 0.018;
+        targetRotX = Math.max(-0.45, Math.min(0.65, targetRotX + dy * 0.014));
+    };
+
+    const onUp = () => {
+        if (!isDragging) return;
+        isDragging = false;
+        container.style.cursor = 'grab';
+        idleTimer = setTimeout(() => {
+            userInteracted = false;
+        }, 5000);
+    };
+
+    const onWheel = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        userInteracted = true;
+        const delta = e.deltaY * 0.002;
+        const curDist = camera.position.length();
+        const minDist = baseDist * 0.65;
+        const maxDist = baseDist * 2.2;
+        const newDist = Math.max(minDist, Math.min(maxDist, curDist * (1 + delta)));
+        camera.position.setLength(newDist);
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => { userInteracted = false; }, 5000);
+    };
+
+    container.addEventListener('pointerdown', onDown);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    container.addEventListener('wheel', onWheel, { passive: false });
+
+    return {
+        update(dt, t, swayAmp, phase) {
+            if (userInteracted || isDragging) {
+                rotX += (targetRotX - rotX) * 0.18;
+                rotY += (targetRotY - rotY) * 0.18;
+                group.rotation.x = rotX;
+                group.rotation.y = rotY;
+            } else {
+                targetRotX *= 0.96;
+                rotX *= 0.96;
+                group.rotation.x = rotX;
+                const sway = Math.sin(t * 0.55 + phase) * swayAmp;
+                group.rotation.y = sway;
+                targetRotY = sway;
+                rotY = sway;
+            }
+        },
+        dispose() {
+            container.removeEventListener('pointerdown', onDown);
+            window.removeEventListener('pointermove', onMove);
+            window.removeEventListener('pointerup', onUp);
+            container.removeEventListener('wheel', onWheel);
+        }
+    };
+}
+
+// Hoàn tất cảnh: canh camera, bóng đổ, chạy hoạt ảnh tương tác xoay 360 độ & zoom
 function _finishScene(container, ctx, group, update, opts = {}) {
     const { scene, camera, renderer } = ctx;
     const box = _fitCamera(camera, group, opts.margin);
     if (!opts.noShadow) _addContactShadow(scene, box, opts.shadow);
     const clock = new THREE.Clock();
     const swayAmp = opts.sway ?? 0.55;
+    const baseDist = camera.position.length();
+    const interaction = _attachCardInteraction(container, camera, group, baseDist);
+
     // Mức lượng chất: đổi mượt từ mức hiện tại tới mức đích
     const amt = { cur: 1, target: 1 };
     if (opts.amount) {
         if (_chemAmountTargets.has(container.id)) amt.cur = amt.target = _chemAmountTargets.get(container.id);
         opts.amount(amt.cur);
         const item = _chemRenderers.get(container.id);
-        if (item) item.setAmount = (level) => { amt.target = level; };
+        if (item) {
+            item.setAmount = (level) => { amt.target = level; };
+            item.interaction = interaction;
+        }
+    } else {
+        const item = _chemRenderers.get(container.id);
+        if (item) item.interaction = interaction;
     }
     const phase = Math.random() * Math.PI * 2;
     function tick() {
@@ -493,7 +591,7 @@ function _finishScene(container, ctx, group, update, opts = {}) {
             opts.amount(amt.cur);
         }
         if (opts.spin) group.rotation.y += dt * opts.spin;
-        else group.rotation.y = Math.sin(t * 0.55 + phase) * swayAmp;
+        else interaction.update(dt, t, swayAmp, phase);
         if (update) update(dt, t);
         renderer.render(scene, camera);
     }
@@ -508,21 +606,33 @@ function _lin(hex) { return new THREE.Color(hex).convertSRGBToLinear(); }
 
 function _glassMat(opts = {}) {
     return new THREE.MeshPhysicalMaterial({
-        color: _lin(opts.color ?? 0xf4fbff),
-        metalness: 0, roughness: opts.roughness ?? 0.04,
-        transparent: true, opacity: opts.opacity ?? 0.08,
-        clearcoat: 1, clearcoatRoughness: 0.03,
-        envMapIntensity: 1.7, side: THREE.DoubleSide, depthWrite: false
+        color: _lin(opts.color ?? 0xf0f7ff),
+        metalness: 0.02,
+        roughness: opts.roughness ?? 0.02,
+        transparent: true,
+        opacity: opts.opacity ?? 0.16,
+        clearcoat: 1.0,
+        clearcoatRoughness: 0.02,
+        envMapIntensity: 2.4,
+        reflectivity: 0.95,
+        side: THREE.DoubleSide,
+        depthWrite: false
     });
 }
 
 function _liquidMat(hex, opts = {}) {
     const c = _lin(hex);
     return new THREE.MeshPhysicalMaterial({
-        color: c, metalness: 0, roughness: 0.08,
-        transparent: true, opacity: opts.opacity ?? 0.82,
-        clearcoat: 0.4, clearcoatRoughness: 0.1, envMapIntensity: 0.55,
-        emissive: c.clone().multiplyScalar(opts.glow ?? 0.12), depthWrite: false
+        color: c,
+        metalness: 0.02,
+        roughness: 0.05,
+        transparent: true,
+        opacity: opts.opacity ?? 0.85,
+        clearcoat: 0.7,
+        clearcoatRoughness: 0.05,
+        envMapIntensity: 0.9,
+        emissive: c.clone().multiplyScalar(opts.glow ?? 0.16),
+        depthWrite: false
     });
 }
 
