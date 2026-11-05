@@ -1,18 +1,22 @@
 """
 HỆ THỐNG NHIỀU AGENT cho Trực quan hóa phương trình hóa học.
 
-Luồng (Orchestrator điều phối bằng code, không tốn lượt gọi AI để định tuyến):
+    VisionAgent (1 AI) ──► SolverAgent (0-3 AI, tự chọn công cụ) ──► VerifierAgent (0 AI) ──► gửi kết quả
+                               ▲                                          │ sai → gửi lỗi lại
+                               └──────────────────────────────────────────┘
 
-    VisionAgent (1 AI) ──► SolverAgent (0-1 AI) ──► VerifierAgent (0 AI) ──► gửi phương trình + an toàn
-                               ▲                         │ sai → gửi lỗi lại, tối đa 2 lần
-                               └─────────────────────────┘
+SolverAgent: phương trình đã đủ 2 vế thì cân bằng bằng Python, không gọi AI. Các trường hợp còn lại
+chạy vòng lặp agent: AI chọn công cụ → code chạy công cụ → AI xem kết quả rồi quyết định bước tiếp.
+Đáp án AI nộp được luật hóa học kiểm tra ngay; đạt thì dừng, không tốn thêm lượt.
+Orchestrator giữ giới hạn cứng về số bước AI và thời gian; cảnh báo an toàn luôn do code quyết định.
 
-Gặp lỗi trước khi có phương trình (hết lượt API, quá thời gian, lỗi agent) → ném AgentFailure,
-main.py tự chạy lại bằng SuperAgent (chế độ dự phòng).
+AI bận / quá thời gian trước khi có phương trình → ném AgentFailure, main.py chạy lại bằng SuperAgent.
+Hết lượt API → ApiQuotaExceeded đi thẳng ra main.py để báo giáo viên.
 Nhật ký agent chỉ in ra terminal, không gửi lên giao diện.
 TutorAgent, QuizAgent: Orchestrator không còn chạy để tiết kiệm lượt API.
 """
 import asyncio
+import json
 import re
 import time
 from io import BytesIO
@@ -25,6 +29,12 @@ class AgentFailure(Exception):
 async def print_agent_log(agent: str, message: str):
     """Nhật ký agent: in ra terminal để theo dõi, không gửi lên giao diện."""
     print(f"[AGENT] {agent}: {message}", flush=True)
+
+
+def _brief(value, limit: int = 110) -> str:
+    """Rút gọn tham số/kết quả công cụ để in nhật ký."""
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def _m():
@@ -52,6 +62,20 @@ def to_ascii_equation(equation: str, conditions: list = None) -> str:
 def display_equation(reactants: list, products: list, coeffs: list, conditions: list) -> str:
     from chem_checker import format_balanced_equation
     return format_balanced_equation(reactants, products, coeffs, ", ".join(c for c in conditions if c))
+
+
+class AgentBudget:
+    """Giới hạn cứng cho một lần bấm: số bước AI và thời gian còn lại. Agent không tự vượt được."""
+
+    def __init__(self, max_ai_steps: int, seconds: float):
+        self.ai_left = max_ai_steps
+        self.deadline = time.perf_counter() + seconds
+
+    def seconds_left(self) -> float:
+        return self.deadline - time.perf_counter()
+
+    def can_call_ai(self) -> bool:
+        return self.ai_left > 0 and self.seconds_left() > 1.0
 
 
 class AgentTimer:
@@ -133,29 +157,49 @@ class VisionAgent:
 #  SOLVER AGENT — cân bằng, xác định sản phẩm, tính toán
 #  Ưu tiên Python (0 AI); chỉ gọi Gemini khi thiếu sản phẩm hoặc bị Verifier trả lỗi.
 # ============================================================
-SOLVER_PROMPT = """You are a Vietnamese high-school chemistry solver (GDPT 2018).
-Given reactants (and maybe a draft equation), give the correct, BALANCED main reaction taught in Vietnamese high school.
-Use plain ASCII formulas (H2SO4, Fe2(SO4)3). Put conditions in "conditions", NOT inside the equation.
+SOLVER_PROMPT = """You are SolverAgent, a Vietnamese high-school chemistry solver (GDPT 2018).
+Goal: the correct main reaction taught in Vietnamese high school for the given reactants. You decide what to do by calling tools.
 
-IMPORTANT RULES ON NON-REACTING SUBSTANCES:
-If NO chemical reaction occurs between the given reactants under standard / high-school conditions (e.g. H2 + H2SO4, Cu + HCl, Cu + H2SO4 loãng, Ag + HCl, NaCl + KNO3, BaSO4 + HCl):
-Set "reaction": false, "no_reaction_reason": "<clear concise explanation in Vietnamese why no reaction occurs>",
-"equation": "<reactants> -> khong phan ung", "reactants": [...], "products": [], "conditions": [], "catalyst": null.
-Otherwise, set "reaction": true, "no_reaction_reason": null.
+TOOLS:
+- submit_equation: your final answer. Code balances it and checks it against chemistry rules. If it passes you are done; if not you get the errors and must fix them.
+- declare_no_reaction: final answer when NO reaction occurs under standard high-school conditions (e.g. H2 + H2SO4, Cu + HCl, Cu + H2SO4 loãng, Ag + HCl, NaCl + KNO3, BaSO4 + HCl).
+- balance_equation, check_equation: only when you are unsure and want to test a candidate first.
 
-Return STRICTLY JSON:
-{"reaction":true,"equation":"<balanced, e.g. 2Al + 6HCl -> 2AlCl3 + 3H2>","reactants":["Al","HCl"],"products":["AlCl3","H2"],
- "conditions":["<t°|MnO2|ánh sáng|...; empty list if none>"],"catalyst":"<catalyst or null>","no_reaction_reason":null}"""
+Each step costs the teacher waiting time: when you are confident, go straight to a final answer.
+A rule-based checker's errors are authoritative: never resubmit what it rejected.
+Use plain ASCII formulas (H2SO4, Fe2(SO4)3). No coefficients in reactants or products. Put conditions (t°, MnO2, ánh sáng...) in "conditions", not in formulas.
+Write the no_reaction reason in Vietnamese."""
+
+_STR_LIST = {"type": "ARRAY", "items": {"type": "STRING"}}
+SOLVER_TOOLS = [{"function_declarations": [
+    {"name": "balance_equation", "description": "Cân bằng thử bằng ma trận. Trả về phương trình đã cân bằng hoặc báo không cân bằng được.",
+     "parameters": {"type": "OBJECT", "properties": {"reactants": _STR_LIST, "products": _STR_LIST}, "required": ["reactants", "products"]}},
+    {"name": "check_equation", "description": "Kiểm tra phương trình bằng luật hóa học: sản phẩm, hóa trị, điều kiện, bảo toàn nguyên tố.",
+     "parameters": {"type": "OBJECT", "properties": {"equation": {"type": "STRING", "description": "Ví dụ: 2Al + 6HCl -> 2AlCl3 + 3H2"}}, "required": ["equation"]}},
+    {"name": "submit_equation", "description": "Nộp đáp án cuối: chất tham gia, sản phẩm, điều kiện, xúc tác.",
+     "parameters": {"type": "OBJECT", "properties": {"reactants": _STR_LIST, "products": _STR_LIST, "conditions": _STR_LIST,
+                                                     "catalyst": {"type": "STRING"}}, "required": ["reactants", "products"]}},
+    {"name": "declare_no_reaction", "description": "Nộp kết luận cuối: các chất không phản ứng với nhau.",
+     "parameters": {"type": "OBJECT", "properties": {"reason": {"type": "STRING", "description": "Lý do ngắn bằng tiếng Việt"}}, "required": ["reason"]}},
+]}]
+_SOLVER_FINAL_TOOLS = ["submit_equation", "declare_no_reaction"]
+
+
+def _same_substances(reactants: list, products: list) -> bool:
+    return set(r.upper() for r in reactants) == set(p.upper() for p in products)
+
+
+def _str_list(value) -> list:
+    return [str(x).strip() for x in value if str(x).strip()] if isinstance(value, list) else []
 
 
 class SolverAgent:
     name = "SolverAgent"
+    STEP_TIMEOUT = 12.0   # giây — tối đa cho mỗi bước AI
 
     def _python_balance(self, reactants: list, products: list, conditions: list):
         from chem_checker import balance_equation_matrix
-        if not reactants or not products:
-            return None
-        if set([r.upper() for r in reactants]) == set([p.upper() for p in products]):
+        if not reactants or not products or _same_substances(reactants, products):
             return None
         try:
             coeffs = balance_equation_matrix(reactants, products)
@@ -163,94 +207,146 @@ class SolverAgent:
             coeffs = None
         return display_equation(reactants, products, coeffs, conditions) if coeffs else None
 
-    async def run(self, draft: dict, send_log, timer: AgentTimer, feedback: dict = None) -> dict:
+    def _no_reaction(self, reactants: list, reason: str) -> dict:
+        return {
+            "equation": f"{' + '.join(reactants)} → không phản ứng", "reactants": reactants, "products": [],
+            "catalyst": None, "conditions": [],
+            "molar_masses": {s: _m().parse_molar_mass(s) for s in reactants},
+            "mol_calc": {}, "mol_variants": [],
+            "no_reaction": True, "no_reaction_reason": reason,
+        }
+
+    def _solution(self, draft: dict, equation: str, reactants: list, products: list, conditions: list, catalyst) -> dict:
+        """Tính toán bằng các hàm có sẵn, không gọi AI."""
         M = _m()
+        cat = M._enrich_catalyst(reactants, catalyst, conditions)
+        mol_input = draft.get("mol_input") or {}
+        return {
+            "equation": equation, "reactants": reactants, "products": products,
+            "catalyst": cat["catalyst"], "conditions": cat["conditions"],
+            "molar_masses": {s: M.parse_molar_mass(s) for s in reactants + products},
+            "mol_calc": M._calculate_mol_products(reactants, products, mol_input, equation=to_ascii_equation(equation)) if mol_input else {},
+            "mol_variants": M._enrich_mol_variants(reactants, []),
+        }
+
+    # ── Công cụ cho AI. Mỗi công cụ trả (kết quả gửi lại AI, đáp án cuối hoặc None) ──
+    def _tool_balance(self, args: dict, state: dict):
+        equation = self._python_balance(_str_list(args.get("reactants")), _str_list(args.get("products")), [])
+        if not equation:
+            return {"ok": False, "error": "Không cân bằng được: kiểm tra lại công thức hoặc sản phẩm."}, None
+        return {"ok": True, "equation": equation}, None
+
+    def _tool_check(self, args: dict, state: dict):
+        from chem_checker import check_equation_pedagogy
+        check = check_equation_pedagogy(to_ascii_equation(str(args.get("equation", ""))))
+        return {"ok": check["is_correct"], "errors": [e["message"] for e in check["errors"]],
+                "no_reaction": check.get("no_reaction", False), "suggestion": check.get("suggestion", "")}, None
+
+    def _tool_submit(self, args: dict, state: dict):
+        from chem_checker import check_equation_pedagogy
+        reactants = _str_list(args.get("reactants")) or state["reactants"]
+        products = _str_list(args.get("products"))
+        conditions = _str_list(args.get("conditions")) or state["conditions"]
+        catalyst = args.get("catalyst") or state["catalyst"]
+        if not products:
+            return {"ok": False, "error": "Thiếu sản phẩm. Nếu không phản ứng, hãy gọi declare_no_reaction."}, None
+        if _same_substances(reactants, products):
+            return {"ok": True}, self._no_reaction(reactants, "Các chất sau phản ứng trùng với chất tham gia ban đầu, không tạo thành chất mới.")
+        equation = self._python_balance(reactants, products, conditions)
+        if not equation:
+            return {"ok": False, "error": "Không cân bằng được 2 vế: kiểm tra lại công thức hoặc sản phẩm."}, None
+        check = check_equation_pedagogy(to_ascii_equation(equation, conditions))
+        sol = self._solution(state["draft"], equation, reactants, products, conditions, catalyst)
+        if check["is_correct"]:
+            return {"ok": True}, sol
+        state["best"] = sol   # hết lượt mà chưa đạt thì vẫn có kết quả để hiển thị kèm cảnh báo
+        return {"ok": False, "errors": [e["message"] for e in check["errors"]],
+                "no_reaction": check.get("no_reaction", False), "suggestion": check.get("suggestion", "")}, None
+
+    def _tool_no_reaction(self, args: dict, state: dict):
+        reason = str(args.get("reason") or "Các chất không phản ứng với nhau ở điều kiện thông thường.")
+        return {"ok": True}, self._no_reaction(state["reactants"], reason)
+
+    async def _agent_loop(self, draft: dict, feedback, send_log, budget: AgentBudget):
+        """Vòng lặp agent. Trả (đáp án hoặc None, số bước AI)."""
+        M = _m()
+        tools = {"balance_equation": self._tool_balance, "check_equation": self._tool_check,
+                 "submit_equation": self._tool_submit, "declare_no_reaction": self._tool_no_reaction}
+        state = {"draft": draft, "reactants": [r for r in draft.get("reactants", []) if r],
+                 "conditions": [c for c in draft.get("conditions", []) if c], "catalyst": draft.get("catalyst"), "best": None}
+        context = (f"Draft as written on the board: {draft.get('equation', '')}\nReactants: {state['reactants']}\n"
+                   f"Products written: {[p for p in draft.get('products', []) if p]}")
+        if feedback:
+            errs = "; ".join(e.get("message", "") for e in feedback.get("errors", []))
+            context += f"\nVerifierAgent rejected the previous answer: {errs}\nChecker suggestion (may be partial): {feedback.get('suggestion', '')}"
+        history, steps = [], 0
+        while budget.can_call_ai():
+            last_step = budget.ai_left == 1
+            prompt = context + ("\n\nSteps so far:\n" + "\n".join(history) if history else "")
+            if last_step:
+                prompt += "\n\nThis is your last step: give a final answer now."
+            budget.ai_left -= 1
+            steps += 1
+            res = await M.call_llm_tools([prompt], SOLVER_PROMPT, SOLVER_TOOLS,
+                                         allowed=_SOLVER_FINAL_TOOLS if last_step else None,
+                                         total_timeout=min(self.STEP_TIMEOUT, budget.seconds_left()))
+            if res.get("_llm_error"):
+                raise AgentFailure(f"SolverAgent: {res.get('explanation', 'AI không phản hồi')}")
+            for call in res["calls"]:
+                name, args = call["name"], call["args"]
+                tool = tools.get(name)
+                result, final = tool(args, state) if tool else ({"ok": False, "error": f"Không có công cụ {name}"}, None)
+                await send_log(self.name, f"🧠 Bước {steps}: AI chọn {name}({_brief(args)}) → {_brief(result)}")
+                if final:
+                    return final, steps
+                history.append(f"{len(history) + 1}. {name}({json.dumps(args, ensure_ascii=False)}) -> {json.dumps(result, ensure_ascii=False)}")
+        await send_log(self.name, "⚠️ Hết lượt cho phép, chưa có đáp án đạt luật")
+        return state["best"], steps
+
+    def _from_checker_suggestion(self, draft: dict, feedback: dict):
+        """AI không kịp sửa: dùng phương trình đúng mà luật hóa học gợi ý, nếu nó tự qua được kiểm tra."""
+        from chem_checker import check_equation_pedagogy, parse_equation_sides
+        ascii_eq = to_ascii_equation((feedback or {}).get("suggestion") or "")
+        if not ascii_eq or not check_equation_pedagogy(ascii_eq)["is_correct"]:
+            return None
+        left, right, _ = parse_equation_sides(ascii_eq)
+        reactants, products = [f for _, f in left], [f for _, f in right]
+        conditions = [c for c in draft.get("conditions", []) if c]
+        equation = self._python_balance(reactants, products, conditions)
+        return self._solution(draft, equation, reactants, products, conditions, draft.get("catalyst")) if equation else None
+
+    async def run(self, draft: dict, send_log, timer: AgentTimer, budget: AgentBudget, feedback: dict = None) -> dict:
         t = time.perf_counter()
         reactants = [r for r in draft.get("reactants", []) if r]
         products = [p for p in draft.get("products", []) if p]
         conditions = [c for c in draft.get("conditions", []) if c]
-        catalyst = draft.get("catalyst")
-        ai_calls, source = 0, "python"
 
         if feedback and (feedback.get("no_reaction") or any(e.get("type") == "no_reaction" for e in feedback.get("errors", []))):
             reason = feedback.get("errors", [{}])[0].get("message", "Không có phản ứng hóa học xảy ra.")
-            equation = f"{' + '.join(reactants)} → không phản ứng"
-            await send_log(self.name, f"ℹ️ Xác nhận không phản ứng: {equation}")
+            await send_log(self.name, f"ℹ️ Xác nhận không phản ứng: {' + '.join(reactants)}")
             timer.add(self.name, time.perf_counter() - t, 0, "(không phản ứng)")
-            return {
-                "equation": equation, "reactants": reactants, "products": [],
-                "catalyst": None, "conditions": [],
-                "molar_masses": {s: M.parse_molar_mass(s) for s in reactants},
-                "mol_calc": {}, "mol_variants": [],
-                "no_reaction": True, "no_reaction_reason": reason
-            }
+            return self._no_reaction(reactants, reason)
 
+        # Đề đã đủ 2 vế: Python cân bằng, không tốn lượt AI; sai thì VerifierAgent sẽ trả về
         equation = None if feedback else self._python_balance(reactants, products, conditions)
         if equation:
             await send_log(self.name, f"🧮 Cân bằng bằng ma trận Gauss (không gọi AI): {equation}")
-        else:
-            if feedback:
-                errs = "; ".join(e.get("message", "") for e in feedback.get("errors", []))
-                await send_log(self.name, f"🔧 Nhận lỗi từ VerifierAgent, đang sửa: {errs[:120]}")
-                prompt = (f"Draft equation: {draft.get('equation', '')}\nReactants: {reactants}\n"
-                          f"A rule-based checker found these errors: {errs}\n"
-                          f"Checker suggestion (may be partial): {feedback.get('suggestion', '')}\n"
-                          "Fix the equation (products and balance).")
-            else:
-                await send_log(self.name, "🤔 Chưa đủ sản phẩm → hỏi Gemini xác định sản phẩm...")
-                prompt = f"Draft as written: {draft.get('equation', '')}\nReactants: {reactants}\nProducts written: {products}"
-            res = await M.call_llm([prompt], SOLVER_PROMPT, hedge_delay=2.5, total_timeout=12.0)
-            if res.get("_llm_error"):
-                raise AgentFailure(f"SolverAgent: {res.get('explanation', 'AI không phản hồi')}")
-            ai_calls, source = 1, "gemini"
-            eq_raw = str(res.get("equation", "")).lower()
-            if res.get("reaction") is False or res.get("no_reaction_reason") or "khong phan ung" in eq_raw or "không phản ứng" in eq_raw:
-                equation = f"{' + '.join(reactants)} → không phản ứng"
-                reason = res.get("no_reaction_reason") or "Các chất không phản ứng với nhau ở điều kiện thông thường."
-                await send_log(self.name, f"ℹ️ Nhận định không phản ứng: {equation} ({reason})")
-                timer.add(self.name, time.perf_counter() - t, 1, "(không phản ứng)")
-                return {
-                    "equation": equation, "reactants": reactants, "products": [],
-                    "catalyst": None, "conditions": [],
-                    "molar_masses": {s: M.parse_molar_mass(s) for s in reactants},
-                    "mol_calc": {}, "mol_variants": [],
-                    "no_reaction": True, "no_reaction_reason": reason
-                }
-            reactants = res.get("reactants") or reactants
-            products = res.get("products") or products
-            conditions = res.get("conditions") or conditions
-            catalyst = res.get("catalyst") or catalyst
-            if products and set([r.upper() for r in reactants]) == set([p.upper() for p in products]):
-                equation = f"{' + '.join(reactants)} → không phản ứng"
-                reason = "Các chất sau phản ứng trùng với chất tham gia ban đầu, không tạo thành chất mới."
-                await send_log(self.name, f"ℹ️ {reason}")
-                timer.add(self.name, time.perf_counter() - t, 1, "(không phản ứng)")
-                return {
-                    "equation": equation, "reactants": reactants, "products": [],
-                    "catalyst": None, "conditions": [],
-                    "molar_masses": {s: M.parse_molar_mass(s) for s in reactants},
-                    "mol_calc": {}, "mol_variants": [],
-                    "no_reaction": True, "no_reaction_reason": reason
-                }
-            # Kiểm chứng lại hệ số AI đưa ra bằng Python; AI sai hệ số thì dùng hệ số Python
-            equation = self._python_balance(reactants, products, conditions) or res.get("equation", "")
-            if not equation:
-                raise AgentFailure("SolverAgent: không xác định được phương trình")
-            await send_log(self.name, f"✍️ Đề xuất: {equation} → gửi VerifierAgent kiểm tra")
+            timer.add(self.name, time.perf_counter() - t, 0, "(python)")
+            return self._solution(draft, equation, reactants, products, conditions, draft.get("catalyst"))
 
-        # Tính toán bằng các hàm có sẵn
-        cat = M._enrich_catalyst(reactants, catalyst, conditions)
-        molar_masses = {s: M.parse_molar_mass(s) for s in reactants + products}
-        mol_input = draft.get("mol_input") or {}
-        mol_calc = M._calculate_mol_products(reactants, products, mol_input, equation=to_ascii_equation(equation)) if mol_input else {}
-
-        timer.add(self.name, time.perf_counter() - t, ai_calls, f"({source}{', sửa lỗi' if feedback else ''})")
-        return {
-            "equation": equation, "reactants": reactants, "products": products,
-            "catalyst": cat["catalyst"], "conditions": cat["conditions"],
-            "molar_masses": molar_masses, "mol_calc": mol_calc,
-            "mol_variants": M._enrich_mol_variants(reactants, []),
-        }
+        await send_log(self.name, f"🤖 Tự xử lý{' lỗi từ VerifierAgent' if feedback else ''}: còn tối đa {budget.ai_left} bước AI")
+        steps_before = budget.ai_left
+        try:
+            sol, _ = await self._agent_loop(draft, feedback, send_log, budget)
+        except AgentFailure:
+            sol = self._from_checker_suggestion(draft, feedback)
+            if not sol:
+                raise
+            await send_log(self.name, f"🛟 AI không kịp trả lời → dùng gợi ý của luật hóa học: {sol['equation']}")
+        timer.add(self.name, time.perf_counter() - t, steps_before - budget.ai_left, f"(agent{', sửa lỗi' if feedback else ''})")
+        if not sol:
+            raise AgentFailure("SolverAgent: hết lượt cho phép mà chưa có phương trình")
+        return sol
 
 
 # ============================================================
@@ -361,6 +457,7 @@ class QuizAgent:
 # ============================================================
 class Orchestrator:
     MAX_FIX_ROUNDS = 2
+    MAX_AI_STEPS = 4        # tổng số bước AI cho một lần bấm, gồm cả VisionAgent
     PHASE1_TIMEOUT = 20.0   # giây — quá mức này chưa có phương trình thì lùi về SuperAgent
 
     def __init__(self, send_json):
@@ -374,10 +471,13 @@ class Orchestrator:
         Lỗi trước khi có phương trình → AgentFailure."""
         M = _m()
         log = self.send_log
-        await log("Orchestrator", "🧭 Vision → Solver ⇄ Verifier")
+        await log("Orchestrator", f"🧭 Vision → Solver ⇄ Verifier (tối đa {self.MAX_AI_STEPS} bước AI, {self.PHASE1_TIMEOUT:.0f}s)")
 
         try:
             vision, sol, ver, rounds = await asyncio.wait_for(self._solve(img, req), timeout=self.PHASE1_TIMEOUT)
+        except M.ApiQuotaExceeded:
+            self.timer.summary()
+            raise
         except asyncio.TimeoutError:
             self.timer.summary()
             raise AgentFailure(f"quá {self.PHASE1_TIMEOUT:.0f}s chưa có phương trình")
@@ -393,24 +493,27 @@ class Orchestrator:
     async def _solve(self, img, req: dict):
         """Đợt 1: Vision → Solver ⇄ Verifier. Trả (vision, None, None, 0) nếu không phải phương trình hóa học."""
         log = self.send_log
+        # Chừa 1 giây để gửi kết quả tốt nhất trước khi Orchestrator cắt ở PHASE1_TIMEOUT
+        budget = AgentBudget(self.MAX_AI_STEPS, self.PHASE1_TIMEOUT - 1.0)
         vision = await VisionAgent().run(img, log, self.timer)
+        budget.ai_left -= 1
         if vision.get("domain") != "chemistry" or not vision.get("reactants"):
             return vision, None, None, 0
 
         draft = dict(vision, mol_input=req.get("mol_input") or {})
         solver, verifier = SolverAgent(), VerifierAgent()
-        sol = await solver.run(draft, log, self.timer)
+        sol = await solver.run(draft, log, self.timer, budget)
         ver = await verifier.run(sol, log, self.timer)
         rounds = 0
-        while not ver["ok"] and rounds < self.MAX_FIX_ROUNDS:
+        while not ver["ok"] and rounds < self.MAX_FIX_ROUNDS and (budget.can_call_ai() or ver.get("no_reaction")):
             rounds += 1
             await log("Orchestrator", f"🔁 Vòng sửa {rounds}/{self.MAX_FIX_ROUNDS}")
             sol = await solver.run(dict(draft, equation=sol["equation"], reactants=sol["reactants"],
-                                        products=sol["products"]), log, self.timer, feedback=ver["check"])
+                                        products=sol["products"]), log, self.timer, budget, feedback=ver["check"])
             ver = await verifier.run(sol, log, self.timer)
         if not ver["ok"]:
             if any(e["type"] == "format_error" for e in ver["check"]["errors"]):
-                raise AgentFailure("VerifierAgent: phương trình không đọc được sau 2 vòng sửa")
+                raise AgentFailure("VerifierAgent: phương trình không đọc được sau khi sửa")
             await log("Orchestrator", "⚠️ Hết lượt sửa — hiển thị kết quả tốt nhất, kèm cảnh báo của VerifierAgent")
         return vision, sol, ver, rounds
 

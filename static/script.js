@@ -1249,6 +1249,7 @@ function sendDictateToAI(fullText) {
     ws.onmessage = (event) => {
         let data;
         try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'api_quota') { setLoading(false); showQuotaNotice(data.message); ws.close(); return; }
         if (data.type === 'result_dictate') {
             ws.close();
             finish(data.text);
@@ -1276,6 +1277,7 @@ function sendVoiceToAI(fullText) {
     ws.onmessage = (event) => {
         let data;
         try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'api_quota') { setLoading(false); showQuotaNotice(data.message); ws.close(); return; }
         if (data.type === 'log') {
             if (data.message) setLoading(true, data.message);
             return;
@@ -1443,6 +1445,20 @@ function captureAndAnalyze() {
     sendToAI(imageData);
 }
 
+// Thông báo hết lượt API — phần tử riêng vì showToast đã tắt
+function showQuotaNotice(message) {
+    let el = document.getElementById('api-quota-notice');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'api-quota-notice';
+        el.setAttribute('role', 'alert');
+        document.body.appendChild(el);
+    }
+    el.textContent = '⏳ ' + (message || 'Hết lượt API, thử lại sau 1 phút');
+    clearTimeout(el._hideTimer);
+    el._hideTimer = setTimeout(() => el.remove(), 8000);
+}
+
 function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/analyze`);
@@ -1458,6 +1474,7 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
     ws.onmessage = (event) => {
         let data;
         try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'api_quota') { setLoading(false); showQuotaNotice(data.message); ws.close(); return; }
 
         if (data.type === 'log') {
             if (data.message && !lastChemWidgetId) setLoading(true, data.message);
@@ -4936,6 +4953,13 @@ function startQuizGeneration() {
             return;
         }
 
+        if (msg.type === 'api_quota') {
+            ws.close();
+            quizShowScreen('quiz-setup-screen');
+            quizSetupMessage('⏳ ' + msg.message);
+            return;
+        }
+
         if (msg.type === 'error') {
             ws.close();
             quizShowScreen('quiz-setup-screen');
@@ -5579,6 +5603,7 @@ function requestEquationCheckOCR(crop) {
     ws.onmessage = (event) => {
         let data;
         try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'api_quota') { setLoading(false); showQuotaNotice(data.message); ws.close(); return; }
         if (data.type === 'log') {
             if (data.message) setLoading(true, data.message);
             return;
@@ -5617,6 +5642,7 @@ function evaluateEquationCheck(text, crop) {
     ws.onmessage = (event) => {
         let data;
         try { data = JSON.parse(event.data); } catch { return; }
+        if (data.type === 'api_quota') { setLoading(false); showQuotaNotice(data.message); ws.close(); return; }
         if (data.type === 'log') {
             if (data.message) setLoading(true, data.message);
             return;

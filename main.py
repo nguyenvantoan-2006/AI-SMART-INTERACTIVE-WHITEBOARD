@@ -13,6 +13,7 @@ import base64
 import json
 import asyncio
 import re
+from contextvars import ContextVar
 from io import BytesIO
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -77,8 +78,9 @@ _model_cache: dict = {}          # { model_name: GenerativeModel }
 _cached_key_ts: float = 0        # timestamp lần đọc cuối
 
 
-def _get_model(model_name_: str, system_instruction: str):
-    """Lấy hoặc tạo model. Tái sử dụng instance cho cùng model_name."""
+def _get_model(model_name_: str, system_instruction: str, tools: list = None):
+    """Lấy hoặc tạo model. Tái sử dụng instance cho cùng model_name.
+    tools: khai báo công cụ cho agent; Gemini không cho dùng chung công cụ với chế độ ép JSON."""
     import time
     global _cached_key, _cached_key_ts
     now = time.time()
@@ -88,20 +90,26 @@ def _get_model(model_name_: str, system_instruction: str):
         _cached_key_ts = now
         if _cached_key:
             genai.configure(api_key=_cached_key)
-    cache_key = f"{model_name_}|{hash(system_instruction)}"
+    tools_key = hash(json.dumps(tools, sort_keys=True)) if tools else ""
+    cache_key = f"{model_name_}|{hash(system_instruction)}|{tools_key}"
     if cache_key not in _model_cache:
-        _model_cache[cache_key] = genai.GenerativeModel(
-            model_name=model_name_,
-            system_instruction=system_instruction,
-            generation_config={"response_mime_type": "application/json"}
-        )
+        if tools:
+            _model_cache[cache_key] = genai.GenerativeModel(
+                model_name=model_name_, system_instruction=system_instruction, tools=tools
+            )
+        else:
+            _model_cache[cache_key] = genai.GenerativeModel(
+                model_name=model_name_,
+                system_instruction=system_instruction,
+                generation_config={"response_mime_type": "application/json"}
+            )
     return _model_cache[cache_key]
 
 DEFAULT_MODEL = "gemini-3.5-flash-lite"   # ~1-2s response time
 FALLBACK_MODELS = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-flash-lite-latest"]
 
-# SPEED OPT: Giảm hedge delay để backup model nhảy vào ngay sau 3s nếu model chính chậm
-LLM_HEDGE_DELAY       = 3.0               # giây — chờ bao lâu thì gọi thêm model dự phòng
+# Model lỗi thì chuyển ngay; model chỉ chậm thì chờ tối thiểu chừng này mới gọi thêm (mỗi lần gọi thêm là 1 lượt API)
+LLM_HEDGE_DELAY       = 5.0               # giây
 LLM_TOTAL_TIMEOUT     = 18.0              # giây — tối đa cho cả lượt gọi
 LLM_COOLDOWN_SECONDS  = 60.0              # model vừa lỗi/chậm → xếp xuống cuối trong 1 phút
 _model_cooldown_until: dict = {}          # { model_name: timestamp hết cooldown }
@@ -110,6 +118,68 @@ _last_good_model: tuple = (None, 0.0)     # (model vừa trả lời được, h
 
 class _ApiKeyInvalid(Exception):
     pass
+
+
+class ApiQuotaExceeded(Exception):
+    """Gemini báo hết lượt (429). Trong một lượt WebSocket, lỗi này đi thẳng ra websocket_analyze để báo giáo viên."""
+
+
+_model_quota_until: dict = {}             # { model_name: timestamp } — model hết lượt, không gọi lại trước thời điểm này
+_quota_key = ""                           # key API mà _model_quota_until đang áp dụng
+_ai_stats: ContextVar = ContextVar("ai_stats", default=None)   # thống kê lượt gọi AI của lượt WebSocket hiện tại
+
+
+def count_ai_call(model_name: str, ok: bool = False):
+    """Đếm 1 lượt gọi Gemini thật (không tính lượt lấy từ cache); ok=True: lượt đó đã trả lời thành công."""
+    stats = _ai_stats.get()
+    if stats is None:
+        return
+    if ok:
+        stats["ok"] += 1
+    else:
+        stats["calls"] += 1
+        stats["models"][model_name] = stats["models"].get(model_name, 0) + 1
+
+
+def _is_quota_error(e: Exception) -> bool:
+    text = str(e).lower()
+    return type(e).__name__ == "ResourceExhausted" or "429" in text or "quota" in text
+
+
+def _quota_wait_seconds(e: Exception) -> float:
+    """Thời gian Google yêu cầu chờ (giây), không có thì mặc định 1 phút."""
+    m = re.search(r"retry_delay\s*\{\s*seconds:\s*(\d+)", str(e))
+    return float(m.group(1)) if m else 60.0
+
+
+def _quota_message(wait_seconds: float) -> str:
+    import math
+    if wait_seconds <= 90:
+        return "Hết lượt API, thử lại sau 1 phút"
+    if wait_seconds < 3600:
+        return f"Hết lượt API, thử lại sau {math.ceil(wait_seconds / 60)} phút"
+    return f"Hết lượt API, thử lại sau khoảng {math.ceil(wait_seconds / 3600)} giờ"
+
+
+def _quota_failure(wait_seconds: float) -> dict:
+    msg = _quota_message(wait_seconds)
+    print(f"[LLM] {msg}")
+    if _ai_stats.get() is not None:
+        raise ApiQuotaExceeded(msg)
+    return {"domain": "general", "explanation": msg, "_llm_error": True}
+
+
+def _models_not_quota_blocked(models: list, now: float) -> list:
+    """Bỏ model đang hết lượt. Đổi key trong .env thì các lần chặn cũ không còn hiệu lực."""
+    global _quota_key, _cached_key
+    if _model_quota_until:
+        key = _load_api_key() or _cached_key
+        if key != _quota_key:
+            _model_quota_until.clear()
+            _quota_key = key
+            _cached_key = key
+            genai.configure(api_key=key)
+    return [m for m in models if _model_quota_until.get(m, 0) <= now]
 
 
 _LLM_RESPONSE_CACHE: dict = {}
@@ -124,9 +194,9 @@ def _compute_prompt_hash(prompt: list, system_instruction: str) -> str:
         elif isinstance(item, dict) and "data" in item:
             data = item["data"]
             if isinstance(data, (bytes, bytearray)):
-                hasher.update(data[:4096])
+                hasher.update(data)
             elif isinstance(data, str):
-                hasher.update(data[:4096].encode('utf-8', errors='ignore'))
+                hasher.update(data.encode('utf-8', errors='ignore'))
     return hasher.hexdigest()
 
 
@@ -161,17 +231,41 @@ def _parse_llm_json(text: str, model_candidate: str) -> dict:
         return {"domain": "general", "explanation": "Lỗi định dạng AI: Hãy thử khoanh vùng lại một chút nhé!"}
 
 
-async def _call_one_model(model_candidate: str, prompt: list, system_instruction: str) -> dict:
-    model = _get_model(model_candidate, system_instruction)
+async def _generate(model, prompt: list, **kwargs):
     try:
         # retry=None: tắt tự thử lại ngầm của thư viện khi Google báo 503, để call_llm chuyển model ngay
-        response = await model.generate_content_async(prompt, request_options={"retry": None})
+        return await model.generate_content_async(prompt, request_options={"retry": None}, **kwargs)
     except Exception as e:
         err_msg = str(e)
         if "API_KEY_INVALID" in err_msg or "API key not valid" in err_msg:
             raise _ApiKeyInvalid() from e
         raise
+
+
+async def _call_one_model(model_candidate: str, prompt: list, system_instruction: str) -> dict:
+    response = await _generate(_get_model(model_candidate, system_instruction), prompt)
     return _parse_llm_json(response.text, model_candidate)
+
+
+async def _call_one_model_tools(model_candidate: str, prompt: list, system_instruction: str, tools: list, allowed: list) -> dict:
+    """Bắt buộc AI chọn công cụ. AI không chọn công cụ nào → báo lỗi để call_llm thử model khác."""
+    config = {"mode": "ANY"}
+    if allowed:
+        config["allowed_function_names"] = allowed
+    response = await _generate(_get_model(model_candidate, system_instruction, tools=tools), prompt,
+                               tool_config={"function_calling_config": config})
+    calls = []
+    # Lấy phần tử bằng chỉ số: cắt lát (candidates[:1]) trả về dữ liệu thô, đọc tham số sẽ lỗi
+    candidates = response.candidates
+    parts = candidates[0].content.parts if len(candidates) else []
+    for part in parts:
+        fc = part.function_call
+        if fc and fc.name:
+            calls.append({"name": fc.name, "args": type(fc).to_dict(fc).get("args") or {}})
+    if not calls:
+        raise ValueError(f"{model_candidate} không chọn công cụ nào")
+    print(f"[LLM {model_candidate} TOOL CALLS]: {[c['name'] for c in calls]}")
+    return {"calls": calls}
 
 
 # ── Tạo bài tập: loại câu hỏi & mức độ nhận thức (chương trình GDPT 2018) ──
@@ -258,16 +352,10 @@ Trả về JSON hợp lệ (không markdown, không backtick):
 """
 
 
-async def call_llm(prompt: list, system_instruction: str,
-                   hedge_delay: float = LLM_HEDGE_DELAY, total_timeout: float = LLM_TOTAL_TIMEOUT) -> dict:
-    # SPEED OPT 1: Kiểm tra Smart Cache trước khi gọi API
-    cache_key = _compute_prompt_hash(prompt, system_instruction)
-    if cache_key in _LLM_RESPONSE_CACHE:
-        print(f"[CACHE HIT] Phản hồi tức thì (<50ms) từ bộ nhớ đệm [hash={cache_key[:8]}]")
-        return _LLM_RESPONSE_CACHE[cache_key]
-
-    # SPEED OPT 2: Dùng cached key — _get_model() đã refresh mỗi 30s, không cần load_dotenv mỗi call
-    global _cached_key, _last_good_model
+async def _race_models(call_model, hedge_delay: float, total_timeout: float) -> dict:
+    """Gọi call_model(tên_model) theo thứ tự ưu tiên; model lỗi thì chuyển ngay, chậm thì gọi thêm song song.
+    Trả kết quả đầu tiên thành công, hoặc dict có _llm_error."""
+    global _cached_key, _quota_key, _last_good_model
     if not _cached_key:
         _cached_key = _load_api_key()
     current_key = _cached_key
@@ -285,17 +373,25 @@ async def call_llm(prompt: list, system_instruction: str,
     if good_model in models_to_try and now < good_until:
         models_to_try.remove(good_model)
         models_to_try.insert(0, good_model)
+    # Model hết lượt: không gọi nữa cho tới khi Google cho phép; tất cả đều hết lượt → báo ngay, không tốn lượt nào
+    blocked = list(models_to_try)
+    models_to_try = _models_not_quota_blocked(models_to_try, now)
+    if not models_to_try:
+        return _quota_failure(min(_model_quota_until[m] for m in blocked) - now)
 
+    hedge_delay = max(hedge_delay, LLM_HEDGE_DELAY)
     started = time.time()
     running: dict = {}            # task -> model name
     next_idx = 0
+    quota_errors = 0
 
     def launch_next():
         nonlocal next_idx
         m = models_to_try[next_idx]
         next_idx += 1
         print(f"[LLM] Gọi {m} ({time.time() - started:.1f}s)")
-        running[asyncio.ensure_future(_call_one_model(m, prompt, system_instruction))] = m
+        count_ai_call(m)
+        running[asyncio.ensure_future(call_model(m))] = m
 
     launch_next()
     try:
@@ -303,7 +399,7 @@ async def call_llm(prompt: list, system_instruction: str,
             remaining = total_timeout - (time.time() - started)
             if remaining <= 0:
                 break
-            # Còn model dự phòng → chỉ chờ LLM_HEDGE_DELAY rồi gọi thêm model song song
+            # Còn model dự phòng → chỉ chờ hedge_delay rồi gọi thêm model song song
             wait_for = min(hedge_delay, remaining) if next_idx < len(models_to_try) else remaining
             done, _ = await asyncio.wait(running.keys(), timeout=wait_for, return_when=asyncio.FIRST_COMPLETED)
 
@@ -316,15 +412,20 @@ async def call_llm(prompt: list, system_instruction: str,
                     return {"domain": "general", "explanation": "API Key không hợp lệ! Vui lòng cập nhật GEMINI_API_KEY trong file .env.", "_llm_error": True}
                 except Exception as e:
                     print(f"[LLM ERROR with {m}]: {type(e).__name__}: {str(e)[:150]}", flush=True)
-                    _model_cooldown_until[m] = time.time() + LLM_COOLDOWN_SECONDS
+                    if _is_quota_error(e):
+                        _quota_key = _quota_key or current_key
+                        _model_quota_until[m] = time.time() + _quota_wait_seconds(e)
+                        quota_errors += 1
+                        stats = _ai_stats.get()
+                        if stats is not None:
+                            stats["quota"] += 1
+                    else:
+                        _model_cooldown_until[m] = time.time() + LLM_COOLDOWN_SECONDS
                     continue
                 print(f"[LLM] ✅ {m} trả lời sau {time.time() - started:.1f}s")
+                count_ai_call(m, ok=True)
                 _model_cooldown_until.pop(m, None)
                 _last_good_model = (m, time.time() + LLM_COOLDOWN_SECONDS)
-                # Lưu vào cache để tái sử dụng ngay lập tức
-                _LLM_RESPONSE_CACHE[cache_key] = parsed
-                if len(_LLM_RESPONSE_CACHE) > 300:
-                    _LLM_RESPONSE_CACHE.pop(next(iter(_LLM_RESPONSE_CACHE)))
                 return parsed
 
             # Chưa có kết quả (chậm hoặc vừa lỗi) → gọi thêm model dự phòng
@@ -333,12 +434,48 @@ async def call_llm(prompt: list, system_instruction: str,
                     for m in running.values():
                         _model_cooldown_until[m] = time.time() + LLM_COOLDOWN_SECONDS
                 launch_next()
+        # Mọi model đã thử đều báo hết lượt → nói rõ cho giáo viên (khác với AI chỉ đang chậm)
+        if quota_errors and quota_errors == next_idx:
+            now = time.time()
+            return _quota_failure(min(t for t in _model_quota_until.values() if t > now) - now)
     finally:
         for task in running:
             task.cancel()
 
     # _llm_error: để agent (agents.py) nhận ra lỗi và chuyển sang chế độ dự phòng
     return {"domain": "general", "explanation": "Hệ thống AI tạm thời bận do chạm giới hạn lượt gọi. Vui lòng thử lại sau vài giây!", "_llm_error": True}
+
+
+async def _cached_race(cache_key: str, call_model, hedge_delay: float, total_timeout: float) -> dict:
+    if cache_key in _LLM_RESPONSE_CACHE:
+        print(f"[CACHE HIT] Phản hồi tức thì (<50ms) từ bộ nhớ đệm [hash={cache_key[:8]}]")
+        stats = _ai_stats.get()
+        if stats is not None:
+            stats["cache"] += 1
+        return _LLM_RESPONSE_CACHE[cache_key]
+    res = await _race_models(call_model, hedge_delay, total_timeout)
+    if not (isinstance(res, dict) and res.get("_llm_error")):
+        _LLM_RESPONSE_CACHE[cache_key] = res
+        if len(_LLM_RESPONSE_CACHE) > 300:
+            _LLM_RESPONSE_CACHE.pop(next(iter(_LLM_RESPONSE_CACHE)))
+    return res
+
+
+async def call_llm(prompt: list, system_instruction: str,
+                   hedge_delay: float = LLM_HEDGE_DELAY, total_timeout: float = LLM_TOTAL_TIMEOUT) -> dict:
+    return await _cached_race(_compute_prompt_hash(prompt, system_instruction),
+                              lambda m: _call_one_model(m, prompt, system_instruction),
+                              hedge_delay, total_timeout)
+
+
+async def call_llm_tools(prompt: list, system_instruction: str, tools: list, allowed: list = None,
+                         hedge_delay: float = LLM_HEDGE_DELAY, total_timeout: float = LLM_TOTAL_TIMEOUT) -> dict:
+    """Gọi AI ở chế độ tự chọn công cụ. Trả {"calls": [{"name", "args"}, ...]} hoặc dict có _llm_error.
+    Lịch sử gửi lại dưới dạng văn bản trong prompt (không gửi lại lượt gọi công cụ gốc),
+    nên giữa các bước vẫn đổi model được khi Google quá tải."""
+    key = _compute_prompt_hash(prompt + [json.dumps([tools, allowed], sort_keys=True)], system_instruction)
+    return await _cached_race(key, lambda m: _call_one_model_tools(m, prompt, system_instruction, tools, allowed),
+                              hedge_delay, total_timeout)
 
 
 # --- AGENTS ---
@@ -1174,6 +1311,8 @@ TRẢ VỀ JSON (không markdown, không backtick):
         }
     except asyncio.TimeoutError:
         return {"type": "error", "message": "⏱️ AI xử lý quá lâu. Vui lòng thử lại!"}
+    except ApiQuotaExceeded:
+        raise
     except Exception as e:
         print(f"[NLP ERROR]: {e}")
         return {"type": "error", "message": f"Lỗi phân tích: {str(e)[:100]}"}
@@ -1275,6 +1414,8 @@ async def dictate_to_board_text(raw: str) -> str:
     """Chuẩn hóa lời đọc để ghi bảng. AI lỗi, hoặc trả về đoạn ngắn/dài bất thường (tóm tắt / thêm lời) → giữ nguyên lời đọc."""
     try:
         res = await call_llm([f"Văn bản nhận dạng giọng nói:\n{raw}"], DICTATE_PROMPT, hedge_delay=2.5, total_timeout=10.0)
+    except ApiQuotaExceeded:
+        raise
     except Exception as e:
         print(f"[Dictate] Lỗi AI: {e}")
         return raw
@@ -1307,6 +1448,8 @@ async def generate_quiz(source, num_questions: int, q_type: str, level: str):
             prompt = [f"Đây là phần nội dung giáo viên đã khoanh vùng trên bảng. {ask}", source]
         try:
             res = await call_llm(prompt, QUIZ_SYSTEM_PROMPT, hedge_delay=4.0, total_timeout=18.0)
+        except ApiQuotaExceeded:
+            raise
         except Exception as e:
             print(f"[QUIZ] Phần {i + 1} lỗi: {e}")
             return {}
@@ -1367,6 +1510,10 @@ async def generate_quiz(source, num_questions: int, q_type: str, level: str):
 async def _warmup_llm():
     """SPEED OPT: gọi AI một lần lúc khởi động để mở sẵn kết nối tới Google —
     lần trực quan hóa đầu tiên không phải chờ thêm ~1,5 s thiết lập kết nối."""
+    # Mỗi lần khởi động tốn 1 lượt API (reload=True: mỗi lần lưu code) nên mặc định tắt
+    if os.getenv("LLM_WARMUP", "false").strip().lower() != "true":
+        return
+
     async def run():
         import time
         t = time.time()
@@ -1385,7 +1532,10 @@ async def websocket_analyze(websocket: WebSocket):
     
     async def send_log(agent: str, msg: str):
         await websocket.send_json({"type": "log", "agent": agent, "message": msg})
-        
+
+    stats = {"calls": 0, "ok": 0, "quota": 0, "cache": 0, "models": {}}
+    _ai_stats.set(stats)
+    action = "?"
     try:
         data = await websocket.receive_text()
         req = json.loads(data)
@@ -1436,7 +1586,9 @@ Output strictly valid JSON (no markdown, no backticks):
             t_start = time.perf_counter()
             fallback_used = False
             res = None
-            if req.get("mode", "deep") == "deep":
+            # AGENT_MODE trong .env: "deep" (mặc định) hoặc "fast" (chỉ SuperAgent 1 lượt, dùng khi test giao diện)
+            agent_mode = (req.get("mode") or os.getenv("AGENT_MODE", "deep")).strip().lower()
+            if agent_mode != "fast":
                 # Mặc định: nhiều agent (agents.py). Hóa học → Orchestrator tự gửi kết quả;
                 # domain khác → trả kết quả VisionAgent để dùng lại luồng hiển thị bên dưới.
                 from agents import Orchestrator
@@ -1444,10 +1596,10 @@ Output strictly valid JSON (no markdown, no backticks):
                     res = await Orchestrator(websocket.send_json).run(img, req)
                     if res is None:
                         return
-                except WebSocketDisconnect:
+                except (WebSocketDisconnect, ApiQuotaExceeded):
                     raise
                 except Exception as e:
-                    # Hết lượt API / quá thời gian / lỗi agent → chạy lại bằng SuperAgent để giáo viên vẫn có kết quả
+                    # Quá thời gian / AI bận / lỗi agent → chạy lại bằng SuperAgent để giáo viên vẫn có kết quả
                     print(f"[FALLBACK] Chế độ sâu lỗi: {e!r} → SuperAgent")
                     fallback_used = True
                     t_start = time.perf_counter()
@@ -1686,6 +1838,8 @@ Format: Return strictly JSON: {"equation": "<transcribed_equation>"} (no markdow
             try:
                 res = await call_llm(prompt, ocr_sys, hedge_delay=1.5, total_timeout=8.0)
                 eq_text = res.get("equation", "").strip() if isinstance(res, dict) else ""
+            except ApiQuotaExceeded:
+                raise
             except Exception as e:
                 print(f"[OCR EQ ERROR]: {e}")
                 eq_text = ""
@@ -1713,10 +1867,16 @@ Format: Return strictly JSON: {"equation": "<transcribed_equation>"} (no markdow
 
     except WebSocketDisconnect:
         print("Client disconnected")
+    except ApiQuotaExceeded as e:
+        await websocket.send_json({"type": "api_quota", "message": str(e)})
+        await websocket.close()
     except Exception as e:
         await send_log("System", f"Error: {str(e)}")
         print(f"Error during WS: {e}")
         await websocket.close()
+    finally:
+        print(f"[AI CALLS] {action}: {stats['calls']} lượt gọi Gemini | thành công {stats['ok']} | hết lượt (429) {stats['quota']}"
+              f" | lấy từ cache {stats['cache']}" + (f" | {stats['models']}" if stats["models"] else ""), flush=True)
 
 
 @app.post("/api/chem/check_equation")
@@ -1833,6 +1993,8 @@ async def delete_exercise(name: str):
 try:
     from chem_tts_module import register_tts_routes
     register_tts_routes(app)
+    import chem_tts_module
+    chem_tts_module.ai_call_hook = count_ai_call
 except ImportError as _tts_err:
     print(f"[TTS] Bỏ qua module TTS: {_tts_err}")
     print("[TTS] Để bật: pip install edge-tts  rồi restart server")

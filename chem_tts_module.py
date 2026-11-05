@@ -680,6 +680,9 @@ def _validate_speech_script(input_text: str, script_lines: list[str]) -> tuple[b
     return True, ""
 
 
+ai_call_hook = None   # main.py gán hàm đếm lượt gọi AI
+
+
 async def generate_speech_script(
     text: str, 
     gemini_model_name: str = 'gemini-flash-lite-latest',
@@ -706,7 +709,11 @@ async def generate_speech_script(
 
         for attempt in range(max_retries + 1):
             try:
+                if ai_call_hook:
+                    ai_call_hook(gemini_model_name)
                 response = await asyncio.to_thread(model.generate_content, current_prompt)
+                if ai_call_hook:
+                    ai_call_hook(gemini_model_name, ok=True)
                 raw_script = response.text.strip() if response and response.text else ""
             except Exception as call_err:
                 print(f"[SpeechScript] Lỗi gọi Gemini (lần {attempt + 1}): {call_err}")
