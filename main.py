@@ -105,6 +105,7 @@ LLM_HEDGE_DELAY       = 3.0               # giây — chờ bao lâu thì gọi 
 LLM_TOTAL_TIMEOUT     = 18.0              # giây — tối đa cho cả lượt gọi
 LLM_COOLDOWN_SECONDS  = 60.0              # model vừa lỗi/chậm → xếp xuống cuối trong 1 phút
 _model_cooldown_until: dict = {}          # { model_name: timestamp hết cooldown }
+_last_good_model: tuple = (None, 0.0)     # (model vừa trả lời được, hạn ưu tiên) — lần gọi sau thử model này trước
 
 
 class _ApiKeyInvalid(Exception):
@@ -163,7 +164,8 @@ def _parse_llm_json(text: str, model_candidate: str) -> dict:
 async def _call_one_model(model_candidate: str, prompt: list, system_instruction: str) -> dict:
     model = _get_model(model_candidate, system_instruction)
     try:
-        response = await model.generate_content_async(prompt)
+        # retry=None: tắt tự thử lại ngầm của thư viện khi Google báo 503, để call_llm chuyển model ngay
+        response = await model.generate_content_async(prompt, request_options={"retry": None})
     except Exception as e:
         err_msg = str(e)
         if "API_KEY_INVALID" in err_msg or "API key not valid" in err_msg:
@@ -265,7 +267,7 @@ async def call_llm(prompt: list, system_instruction: str,
         return _LLM_RESPONSE_CACHE[cache_key]
 
     # SPEED OPT 2: Dùng cached key — _get_model() đã refresh mỗi 30s, không cần load_dotenv mỗi call
-    global _cached_key
+    global _cached_key, _last_good_model
     if not _cached_key:
         _cached_key = _load_api_key()
     current_key = _cached_key
@@ -278,6 +280,11 @@ async def call_llm(prompt: list, system_instruction: str,
     # Đẩy model đang cooldown (vừa lỗi/chậm) xuống cuối — vẫn giữ làm phương án cuối cùng
     now = time.time()
     models_to_try.sort(key=lambda m: _model_cooldown_until.get(m, 0) > now)
+    # Model vừa trả lời được trong 1 phút qua → thử trước, không dò lại các model đang quá tải
+    good_model, good_until = _last_good_model
+    if good_model in models_to_try and now < good_until:
+        models_to_try.remove(good_model)
+        models_to_try.insert(0, good_model)
 
     started = time.time()
     running: dict = {}            # task -> model name
@@ -312,6 +319,8 @@ async def call_llm(prompt: list, system_instruction: str,
                     _model_cooldown_until[m] = time.time() + LLM_COOLDOWN_SECONDS
                     continue
                 print(f"[LLM] ✅ {m} trả lời sau {time.time() - started:.1f}s")
+                _model_cooldown_until.pop(m, None)
+                _last_good_model = (m, time.time() + LLM_COOLDOWN_SECONDS)
                 # Lưu vào cache để tái sử dụng ngay lập tức
                 _LLM_RESPONSE_CACHE[cache_key] = parsed
                 if len(_LLM_RESPONSE_CACHE) > 300:

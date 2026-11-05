@@ -2815,9 +2815,11 @@ function buildChemWidget(data) {
     // ── Equation info bar: hiển thị phương trình + khái niệm ─────
     // Áp dụng canonicalizeEquation trước khi render
     const cleanEquation = canonicalizeEquation(equation);
-    const equationDisplay = isNoReaction 
+    // Chưa bấm "Xem phản ứng": chỉ ghi chất tham gia, chưa lộ hệ số và sản phẩm
+    const equationPendingHtml = `${reactants.map(r => renderFormulaHtml(r)).join(' + ')} → ?`;
+    const equationDisplay = isNoReaction
         ? `${reactants.map(r => renderFormulaHtml(r)).join(' + ')} <span style="color:#f87171;font-weight:700;margin:0 6px;">⇸</span> <span style="color:#fca5a5;font-style:italic;">Không phản ứng</span>`
-        : renderFormulaHtml(cleanEquation);
+        : equationPendingHtml;
     const equationBarHtml = cleanEquation || isNoReaction ? `
         <div class="cw-equation-bar">
             <div class="cw-eq-row">
@@ -2891,7 +2893,7 @@ function buildChemWidget(data) {
             </div>
 
             <!-- RIGHT: Products -->
-            <div class="cw-side cw-products" id="cw-right-${wid}">
+            <div class="cw-side cw-products" id="cw-right-${wid}" style="opacity:${isNoReaction ? 1 : 0};">
                 <div class="cw-side-label" style="color:${isNoReaction ? '#94a3b8' : 'var(--green)'};">● Sản phẩm</div>
                 <div class="cw-mols-wrap">
                     ${isNoReaction ? `
@@ -2980,17 +2982,9 @@ function buildChemWidget(data) {
         });
     }
 
-    // Hide products initially if reaction, or show directly if no reaction
+    // Có phản ứng: cột sản phẩm ẩn hẳn (đặt sẵn trong HTML) tới khi bấm "Xem phản ứng".
+    // Chỉ dùng opacity, không thu nhỏ cột: renderChemVisual đo khung thật để vẽ mô hình 3D.
     const rightEl = document.getElementById(`cw-right-${wid}`);
-    if (isNoReaction) {
-        rightEl.style.opacity = '1';
-        rightEl.style.filter = 'none';
-    } else {
-        // Luôn hiển thị sản phẩm rõ nét để giáo viên/học sinh nhận diện ngay từ đầu
-        rightEl.style.opacity = '0.9';
-        rightEl.style.filter = 'none';
-        rightEl.style.transition = 'all 0.5s ease';
-    }
 
     // Load 3D AFTER widget is in DOM (requestAnimationFrame ensures layout is done)
     requestAnimationFrame(() => {
@@ -3034,7 +3028,10 @@ function buildChemWidget(data) {
         }
         ChemicalSoundSynthesizer.init();
         document.getElementById(`cw-play-${wid}`).classList.add('hidden');
-        playChemAnim(wid, soundType);
+        playChemAnim(wid, soundType, () => {
+            const eqEl = widget.querySelector('.cw-eq-formula');
+            if (eqEl) eqEl.innerHTML = renderFormulaHtml(cleanEquation);
+        });
     });
 
     // Replay
@@ -3042,16 +3039,25 @@ function buildChemWidget(data) {
         ChemicalSoundSynthesizer.stop();
         ChemicalSoundSynthesizer.init();
         const leftEl = document.getElementById(`cw-left-${wid}`);
+        const arrowEl = document.getElementById(`cw-arrow-${wid}`);
         document.getElementById(`cw-replay-${wid}`).classList.add('hidden');
-        leftEl.style.transition = 'all 0.5s ease';
-        leftEl.style.transform = '';
-        leftEl.style.opacity = '1';
-        rightEl.style.transition = 'all 0.5s ease';
-        rightEl.style.opacity = '0.9';
-        rightEl.style.filter = 'none';
-        document.getElementById(`cw-arrow-${wid}`).style.transform = '';
-        document.getElementById(`cw-arrow-${wid}`).style.color = '';
-        document.getElementById(`cw-flash-${wid}`).style.opacity = '0';
+        leftEl.querySelectorAll('.cw-mol-card, .cw-plus').forEach(el => {
+            el.style.transition = 'all 0.5s ease';
+            el.style.transform = '';
+            el.style.opacity = '1';
+        });
+        rightEl.style.transition = 'opacity 0.3s ease';
+        rightEl.style.opacity = '0';
+        const eqEl = widget.querySelector('.cw-eq-formula');
+        if (eqEl) eqEl.innerHTML = equationPendingHtml;
+        arrowEl.querySelectorAll('.cw-arrow-sym, .cw-catalyst-label').forEach(el => {
+            el.style.transform = '';
+            el.style.color = '';
+            el.style.textShadow = '';
+        });
+        const flashEl = document.getElementById(`cw-flash-${wid}`);
+        flashEl.style.animation = '';
+        flashEl.style.opacity = '0';
         setTimeout(() => document.getElementById(`cw-play-${wid}`)?.classList.remove('hidden'), 500);
     });
 
@@ -3127,18 +3133,25 @@ function renderProductCards(wid, products, equation) {
     }));
 }
 
-function playChemAnim(wid, soundType = 'none') {
+function playChemAnim(wid, soundType = 'none', onProductsShown = null) {
     const leftEl  = document.getElementById(`cw-left-${wid}`);
     const rightEl = document.getElementById(`cw-right-${wid}`);
     const arrowEl = document.getElementById(`cw-arrow-${wid}`);
     // Target the arrow symbol specifically (div now contains conditions badge too)
     const arrowSym = arrowEl?.querySelector('.cw-arrow-sym') || arrowEl;
     const flashEl = document.getElementById(`cw-flash-${wid}`);
+    const cards = [...leftEl.querySelectorAll('.cw-mol-card')];
+    const plusSigns = [...leftEl.querySelectorAll('.cw-plus')];
 
-    // 1. Reactants pulse slightly
-    leftEl.style.transition = 'all 0.5s ease';
-    leftEl.style.transform = 'scale(1.05)';
-    leftEl.style.opacity = '1';
+    // 1. Các chất tham gia lao vào nhau, gặp nhau ở giữa cột (trong cột nên không bị overflow cắt)
+    const wrapRect = leftEl.querySelector('.cw-mols-wrap').getBoundingClientRect();
+    const centerX = wrapRect.left + wrapRect.width / 2;
+    plusSigns.forEach(p => { p.style.transition = 'opacity 0.3s ease'; p.style.opacity = '0'; });
+    cards.forEach(card => {
+        const r = card.getBoundingClientRect();
+        card.style.transition = 'transform 1s cubic-bezier(0.55, 0, 0.9, 0.4)';
+        card.style.transform = `translateX(${centerX - (r.left + r.width / 2)}px) scale(0.85)`;
+    });
 
     // 2. Arrow glows (0.5s)
     setTimeout(() => {
@@ -3157,9 +3170,12 @@ function playChemAnim(wid, soundType = 'none') {
         }
     }, 500);
 
-    // 3. Flash + Reactants return to normal + Sound Synthesis (1.2s)
+    // 3. Va vào nhau: lóe sáng + âm thanh, các chất tham gia tan dần (1s)
     setTimeout(() => {
-        leftEl.style.transform = 'scale(1)';
+        cards.forEach(card => {
+            card.style.transition = 'opacity 0.35s ease';
+            card.style.opacity = '0';
+        });
         flashEl.style.transition = 'none';
         flashEl.style.opacity = '1';
         flashEl.style.animation = 'cwFlash 0.9s ease-out forwards';
@@ -3173,21 +3189,33 @@ function playChemAnim(wid, soundType = 'none') {
             // Mặc định phản ứng dung dịch / trung hòa axit-bazơ / kết tủa (ví dụ HCl + NaOH)
             ChemicalSoundSynthesizer.playLiquidReaction(2.2);
         }
-    }, 1200);
+    }, 1000);
 
-    // 4. Products appear (1.8s)
+    // 4. Sinh ra sản phẩm, hiện đủ phương trình; chất tham gia về chỗ cũ ở dạng mờ để đối chiếu 2 vế (1.5s)
     setTimeout(() => {
+        rightEl.style.transition = 'opacity 0.7s ease';
         rightEl.style.opacity = '1';
-        rightEl.style.filter = 'blur(0)';
-        rightEl.style.transform = 'scale(1.04)';
+        // animate() không để lại transform trên cột, tránh mô hình 3D vẽ lại sai kích thước
+        rightEl.animate(
+            [{ transform: 'scale(0.6)' }, { transform: 'scale(1.06)', offset: 0.7 }, { transform: 'scale(1)' }],
+            { duration: 700, easing: 'ease-out' }
+        );
+        cards.forEach(card => {
+            card.style.transition = 'none';
+            card.style.transform = '';
+        });
+        void leftEl.offsetWidth;   // áp dụng vị trí cũ trước, để chỉ độ mờ có hiệu ứng
+        [...cards, ...plusSigns].forEach(el => {
+            el.style.transition = 'opacity 0.7s ease';
+            el.style.opacity = '0.35';
+        });
+        if (onProductsShown) onProductsShown();
+    }, 1500);
 
-        setTimeout(() => { rightEl.style.transform = ''; rightEl.style.transition = 'all 0.4s ease'; }, 400);
-    }, 1800);
-
-    // 5. Replay button (2.8s)
+    // 5. Replay button (2.6s)
     setTimeout(() => {
         document.getElementById(`cw-replay-${wid}`)?.classList.remove('hidden');
-    }, 2800);
+    }, 2600);
 }
 
 // ============================================================

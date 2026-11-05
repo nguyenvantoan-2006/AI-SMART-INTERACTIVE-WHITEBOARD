@@ -1139,6 +1139,7 @@ canvas, #whiteboard-canvas, .canvas-container, .upper-canvas, .lower-canvas {
     transition: background 0.2s; line-height: 1.4;
 }
 .cw-replay-btn:hover { background: rgba(59,130,246,0.28); }
+.cw-play-btn.hidden, .cw-replay-btn.hidden { display: none; }
 
 /* Flash overlay (ĐANG DÙNG trong script.js) */
 .cw-flash-overlay {
