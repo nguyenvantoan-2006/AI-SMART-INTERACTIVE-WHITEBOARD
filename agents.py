@@ -1,13 +1,16 @@
 """
 HỆ THỐNG NHIỀU AGENT cho Trực quan hóa phương trình hóa học.
 
-    VisionAgent (1 AI) ──► SolverAgent (0-3 AI, tự chọn công cụ) ──► VerifierAgent (0 AI) ──► gửi kết quả
-                               ▲                                          │ sai → gửi lỗi lại
-                               └──────────────────────────────────────────┘
+    VisionAgent ──giao việc──► SolverAgent (tự chọn công cụ) ◄──sai──► VerifierAgent (luật) ──► gửi kết quả
+          └──────đề đúng, đủ───────────────────────────────────────────────▲                        │
+                                                    SolverAgent ◄─yêu cầu sửa─ VerifierAgent (AI, chạy nền)
 
-SolverAgent: phương trình đã đủ 2 vế thì cân bằng bằng Python, không gọi AI. Các trường hợp còn lại
-chạy vòng lặp agent: AI chọn công cụ → code chạy công cụ → AI xem kết quả rồi quyết định bước tiếp.
-Đáp án AI nộp được luật hóa học kiểm tra ngay; đạt thì dừng, không tốn thêm lượt.
+VisionAgent: đọc ảnh và tự đề xuất giao cho agent nào (next_agent). Code chặn đề xuất vô lý.
+SolverAgent: được giao thì chạy vòng lặp agent: AI chọn công cụ → code chạy công cụ → AI xem kết quả rồi
+quyết định bước tiếp. Đáp án AI nộp được luật hóa học kiểm tra ngay; đạt thì dừng, không tốn thêm lượt.
+Đề không cần AI thì cân bằng bằng Python.
+VerifierAgent: luật chạy trước và AI không được bỏ qua luật. Đáp án do AI tạo mà luật chưa xác nhận thì AI xem
+lại ở nền, sau khi kết quả đã hiện: chấp nhận, yêu cầu Solver sửa, hoặc báo giáo viên.
 Orchestrator giữ giới hạn cứng về số bước AI và thời gian; cảnh báo an toàn luôn do code quyết định.
 
 AI bận / quá thời gian trước khi có phương trình → ném AgentFailure, main.py chạy lại bằng SuperAgent.
@@ -118,7 +121,8 @@ VISION_PROMPT = """You read a Vietnamese chemistry whiteboard image. Return STRI
 DOMAIN SELECTION:
 - "chemistry": chemical formulas/equations (Fe,Na,Cu,Zn,Al,Mg,K,S,Cl,N,C,H,O,P,Ba,Ag,Mn...) + numbers/+/=/→. Fix OCR slips: H20→H2O, C02→CO2, H2S04→H2SO4.
   Transcribe what is WRITTEN. Do NOT balance, do NOT invent products. Use plain ASCII digits (H2SO4, not H₂SO₄).
-  {"domain":"chemistry","equation":"<as written, e.g. Fe + HCl ->>","reactants":["Fe","HCl"],"products":["<only if written, else empty list>"],"conditions":["<written on arrow, e.g. t°, MnO2>"]}
+  {"domain":"chemistry","equation":"<as written, e.g. Fe + HCl ->>","reactants":["Fe","HCl"],"products":["<only if written, else empty list>"],"conditions":["<written on arrow, e.g. t°, MnO2>"],"next_agent":"<verifier|solver>","handoff_reason":"<short reason>"}
+  Decide who handles it next. "verifier": both sides are written and you believe the reaction and products are correct. "solver": products are missing, look chemically wrong or impossible, or you are not sure. Still transcribe exactly what is written.
 - "chemistry_problem": a word problem with quantities/units (gam, ml, lít, mol, M, %) or questions (Tính, Tìm, Cho... tác dụng).
   {"domain":"chemistry_problem","transcribed_problem":"<exact Vietnamese text>","topic":"<topic>","equation":"<main equation>","reactants":[],"products":[]}
 - "math": {"domain":"math","core":{"expression":"<JS expr>"},"tutor":{"explanation":"<Vietnamese>"}}
@@ -147,7 +151,7 @@ class VisionAgent:
         domain = res.get("domain", "general")
         timer.add(self.name, time.perf_counter() - t, 1, f"domain={domain}")
         if domain == "chemistry":
-            await send_log(self.name, f"📷 Đọc được: {res.get('equation', '')} → chuyển cho SolverAgent")
+            await send_log(self.name, f"📷 Đọc được: {res.get('equation', '')}")
         else:
             await send_log(self.name, f"📷 Nội dung loại: {domain}")
         return res
@@ -187,6 +191,15 @@ _SOLVER_FINAL_TOOLS = ["submit_equation", "declare_no_reaction"]
 
 def _same_substances(reactants: list, products: list) -> bool:
     return set(r.upper() for r in reactants) == set(p.upper() for p in products)
+
+
+def _same_answer(sol: dict, suggestion) -> bool:
+    """Đáp án của AI có trùng phương trình đúng mà luật đã biết không."""
+    from chem_checker import clean_substance, parse_equation_sides
+    if not suggestion or sol.get("no_reaction"):
+        return False
+    _, right, _ = parse_equation_sides(to_ascii_equation(suggestion))
+    return {clean_substance(f).upper() for _, f in right} == {clean_substance(p).upper() for p in sol["products"]}
 
 
 def _str_list(value) -> list:
@@ -276,6 +289,8 @@ class SolverAgent:
                  "conditions": [c for c in draft.get("conditions", []) if c], "catalyst": draft.get("catalyst"), "best": None}
         context = (f"Draft as written on the board: {draft.get('equation', '')}\nReactants: {state['reactants']}\n"
                    f"Products written: {[p for p in draft.get('products', []) if p]}")
+        if draft.get("handoff_reason"):
+            context += f"\nVisionAgent's note: {draft['handoff_reason']}"
         if feedback:
             errs = "; ".join(e.get("message", "") for e in feedback.get("errors", []))
             context += f"\nVerifierAgent rejected the previous answer: {errs}\nChecker suggestion (may be partial): {feedback.get('suggestion', '')}"
@@ -325,24 +340,37 @@ class SolverAgent:
             reason = feedback.get("errors", [{}])[0].get("message", "Không có phản ứng hóa học xảy ra.")
             await send_log(self.name, f"ℹ️ Xác nhận không phản ứng: {' + '.join(reactants)}")
             timer.add(self.name, time.perf_counter() - t, 0, "(không phản ứng)")
-            return self._no_reaction(reactants, reason)
+            return dict(self._no_reaction(reactants, reason), source="rule")
 
-        # Đề đã đủ 2 vế: Python cân bằng, không tốn lượt AI; sai thì VerifierAgent sẽ trả về
-        equation = None if feedback else self._python_balance(reactants, products, conditions)
-        if equation:
-            await send_log(self.name, f"🧮 Cân bằng bằng ma trận Gauss (không gọi AI): {equation}")
-            timer.add(self.name, time.perf_counter() - t, 0, "(python)")
-            return self._solution(draft, equation, reactants, products, conditions, draft.get("catalyst"))
+        def python_answer():
+            equation = self._python_balance(reactants, products, conditions)
+            if not equation:
+                return None
+            return dict(self._solution(draft, equation, reactants, products, conditions, draft.get("catalyst")), source="python")
+
+        # VisionAgent không giao việc: Python cân bằng, không tốn lượt AI; sai thì VerifierAgent sẽ trả về
+        if not feedback and draft.get("next_agent") != "solver":
+            sol = python_answer()
+            if sol:
+                await send_log(self.name, f"🧮 Cân bằng bằng ma trận Gauss (không gọi AI): {sol['equation']}")
+                timer.add(self.name, time.perf_counter() - t, 0, "(python)")
+                return sol
 
         await send_log(self.name, f"🤖 Tự xử lý{' lỗi từ VerifierAgent' if feedback else ''}: còn tối đa {budget.ai_left} bước AI")
         steps_before = budget.ai_left
         try:
             sol, _ = await self._agent_loop(draft, feedback, send_log, budget)
+            if sol:
+                sol = dict(sol, source="agent", rule_confirmed=_same_answer(sol, (feedback or {}).get("suggestion")))
         except AgentFailure:
             sol = self._from_checker_suggestion(draft, feedback)
+            if sol:
+                sol = dict(sol, source="rule")
+            elif not feedback:
+                sol = python_answer()   # đề đã đủ 2 vế mà AI bận: vẫn hiện được, VerifierAgent kiểm tra như thường
             if not sol:
                 raise
-            await send_log(self.name, f"🛟 AI không kịp trả lời → dùng gợi ý của luật hóa học: {sol['equation']}")
+            await send_log(self.name, f"🛟 AI không kịp trả lời → dùng kết quả từ luật/Python: {sol['equation']}")
         timer.add(self.name, time.perf_counter() - t, steps_before - budget.ai_left, f"(agent{', sửa lỗi' if feedback else ''})")
         if not sol:
             raise AgentFailure("SolverAgent: hết lượt cho phép mà chưa có phương trình")
@@ -350,10 +378,47 @@ class SolverAgent:
 
 
 # ============================================================
-#  VERIFIER AGENT — KHÔNG gọi AI: check_equation_pedagogy + check_safety
+#  VERIFIER AGENT — luật trước (check_equation_pedagogy + check_safety); AI chỉ xem phần luật chưa bao quát
 # ============================================================
+REVIEW_PROMPT = """You are VerifierAgent, an independent reviewer for a Vietnamese high-school chemistry board (GDPT 2018).
+SolverAgent proposed an answer. Code already checked formulas and atom balance, and safety warnings are handled by code: do not judge those.
+Judge only whether this reaction really happens as stated, with these products, at Vietnamese high-school level.
+
+Decide by calling exactly one tool:
+- accept_answer: the answer is correct.
+- request_fix: you are sure it is wrong. Say what is wrong so SolverAgent can fix it.
+- flag_for_teacher: it depends on conditions you cannot see (concentration, temperature), or you are unsure.
+Write "problem" and "reason" in short Vietnamese."""
+
+REVIEW_TOOLS = [{"function_declarations": [
+    {"name": "accept_answer", "description": "Đáp án đúng.", "parameters": {"type": "OBJECT", "properties": {"note": {"type": "STRING"}}}},
+    {"name": "request_fix", "description": "Chắc chắn đáp án sai, yêu cầu SolverAgent sửa.",
+     "parameters": {"type": "OBJECT", "properties": {"problem": {"type": "STRING", "description": "Sai ở đâu, tiếng Việt"}}, "required": ["problem"]}},
+    {"name": "flag_for_teacher", "description": "Chưa chắc chắn, cần giáo viên xem lại.",
+     "parameters": {"type": "OBJECT", "properties": {"reason": {"type": "STRING", "description": "Lý do ngắn, tiếng Việt"}}, "required": ["reason"]}},
+]}]
+
+
 class VerifierAgent:
     name = "VerifierAgent"
+
+    async def review(self, sol: dict, vision: dict, send_log, timer: AgentTimer, budget: AgentBudget) -> dict:
+        """AI xem lại đáp án của SolverAgent. Trả {"decision": accept|fix|flag, "message": ...}."""
+        M = _m()
+        t = time.perf_counter()
+        budget.ai_left -= 1
+        answer = f"no reaction occurs. Reason given: {sol.get('no_reaction_reason')}" if sol.get("no_reaction") else sol["equation"]
+        prompt = (f"Written on the board: {vision.get('equation', '')}\nReactants: {sol['reactants']}\n"
+                  f"Conditions: {sol.get('conditions') or 'none'}\nSolverAgent's answer: {answer}")
+        res = await M.call_llm_tools([prompt], REVIEW_PROMPT, REVIEW_TOOLS, total_timeout=min(10.0, budget.seconds_left()))
+        if res.get("_llm_error"):
+            raise AgentFailure(f"VerifierAgent: {res.get('explanation', 'AI không phản hồi')}")
+        call = res["calls"][0]
+        args = call["args"]
+        decision = {"request_fix": ("fix", args.get("problem")), "flag_for_teacher": ("flag", args.get("reason"))}.get(call["name"], ("accept", ""))
+        await send_log(self.name, f"🧠 AI chọn {call['name']}({_brief(args)})")
+        timer.add(f"{self.name}.AI", time.perf_counter() - t, 1, f"({decision[0]})")
+        return {"decision": decision[0], "message": str(decision[1] or "")}
 
     async def run(self, sol: dict, send_log, timer: AgentTimer) -> dict:
         from chem_checker import check_equation_pedagogy
@@ -459,6 +524,7 @@ class Orchestrator:
     MAX_FIX_ROUNDS = 2
     MAX_AI_STEPS = 4        # tổng số bước AI cho một lần bấm, gồm cả VisionAgent
     PHASE1_TIMEOUT = 20.0   # giây — quá mức này chưa có phương trình thì lùi về SuperAgent
+    REVIEW_TIMEOUT = 20.0   # giây — VerifierAgent xem lại ở nền, kết quả đã hiện nên không làm giáo viên chờ
 
     def __init__(self, send_json):
         self.send_json = send_json
@@ -474,7 +540,7 @@ class Orchestrator:
         await log("Orchestrator", f"🧭 Vision → Solver ⇄ Verifier (tối đa {self.MAX_AI_STEPS} bước AI, {self.PHASE1_TIMEOUT:.0f}s)")
 
         try:
-            vision, sol, ver, rounds = await asyncio.wait_for(self._solve(img, req), timeout=self.PHASE1_TIMEOUT)
+            vision, draft, sol, ver, rounds, budget = await asyncio.wait_for(self._solve(img, req), timeout=self.PHASE1_TIMEOUT)
         except M.ApiQuotaExceeded:
             self.timer.summary()
             raise
@@ -487,20 +553,29 @@ class Orchestrator:
         if sol is None:
             self.timer.summary()
             return vision
-        await self._send_results(M, vision, sol, ver, rounds)
+        # Chỉ đáp án do AI tạo mà luật chưa xác nhận mới cần AI khác xem lại; luật báo sai thì đã có cảnh báo
+        need_review = sol.get("source") == "agent" and not sol.get("rule_confirmed") and ver["ok"] and budget.ai_left > 0
+        await self._send_results(M, vision, sol, ver, rounds, need_review)
+        if need_review:
+            budget.deadline = time.perf_counter() + self.REVIEW_TIMEOUT
+            await self._background_review(M, vision, draft, sol, rounds, budget)
         return None
 
     async def _solve(self, img, req: dict):
-        """Đợt 1: Vision → Solver ⇄ Verifier. Trả (vision, None, None, 0) nếu không phải phương trình hóa học."""
+        """Vision → Solver ⇄ Verifier. Sol là None nếu không phải phương trình hóa học."""
         log = self.send_log
         # Chừa 1 giây để gửi kết quả tốt nhất trước khi Orchestrator cắt ở PHASE1_TIMEOUT
         budget = AgentBudget(self.MAX_AI_STEPS, self.PHASE1_TIMEOUT - 1.0)
         vision = await VisionAgent().run(img, log, self.timer)
         budget.ai_left -= 1
         if vision.get("domain") != "chemistry" or not vision.get("reactants"):
-            return vision, None, None, 0
+            return vision, None, None, None, 0, budget
 
         draft = dict(vision, mol_input=req.get("mol_input") or {})
+        # VisionAgent tự đề xuất giao việc; code chặn đề xuất vô lý: chưa có sản phẩm thì Verifier không có gì để kiểm tra
+        next_agent = vision.get("next_agent")
+        draft["next_agent"] = "solver" if next_agent == "solver" or not any(vision.get("products") or []) else "verifier"
+        await log(VisionAgent.name, f"📨 Giao cho {draft['next_agent']}: {vision.get('handoff_reason') or 'theo nội dung đề'}")
         solver, verifier = SolverAgent(), VerifierAgent()
         sol = await solver.run(draft, log, self.timer, budget)
         ver = await verifier.run(sol, log, self.timer)
@@ -515,15 +590,55 @@ class Orchestrator:
             if any(e["type"] == "format_error" for e in ver["check"]["errors"]):
                 raise AgentFailure("VerifierAgent: phương trình không đọc được sau khi sửa")
             await log("Orchestrator", "⚠️ Hết lượt sửa — hiển thị kết quả tốt nhất, kèm cảnh báo của VerifierAgent")
-        return vision, sol, ver, rounds
+        return vision, draft, sol, ver, rounds, budget
 
-    async def _send_results(self, M, vision, sol, ver, rounds):
+    async def _background_review(self, M, vision, draft, sol, rounds, budget):
+        """VerifierAgent xem lại ở nền. Lỗi ở đây không được làm hỏng kết quả đã hiện."""
+        review = {"type": "result_verifier_review", "decision": "skipped", "message": ""}
+        try:
+            review.update(await asyncio.wait_for(self._run_review(M, vision, draft, sol, rounds, budget), timeout=self.REVIEW_TIMEOUT))
+        except Exception as e:   # hết lượt, quá giờ, AI bận: giữ nguyên kết quả đã hiện
+            await self.send_log("VerifierAgent", f"⏭️ Bỏ qua bước AI xem lại: {type(e).__name__}: {str(e)[:100]}")
+        try:
+            await self.send_json(review)
+        except Exception as e:   # giáo viên đã đóng kết nối
+            print(f"[AGENT] VerifierAgent: không gửi được kết quả xem lại: {type(e).__name__}", flush=True)
+        self.timer.summary()
+
+    async def _run_review(self, M, vision, draft, sol, rounds, budget) -> dict:
+        verifier = VerifierAgent()
+        review = await verifier.review(sol, vision, self.send_log, self.timer, budget)
+        if review["decision"] != "fix":
+            return review
+        # Verifier yêu cầu sửa → Solver sửa → luật kiểm tra lại. Chỉ đề xuất cho giáo viên khi luật đạt.
+        flag = {"decision": "flag", "message": review["message"]}
+        if not budget.can_call_ai():
+            return flag
+        await self.send_log("VerifierAgent → SolverAgent", f"🔁 {review['message'][:120]}")
+        feedback = {"errors": [{"type": "ai_review", "message": review["message"]}], "suggestion": ""}
+        try:
+            fixed = await SolverAgent().run(dict(draft, equation=sol["equation"], reactants=sol["reactants"], products=sol["products"]),
+                                            self.send_log, self.timer, budget, feedback=feedback)
+        except AgentFailure:
+            return flag
+        fixed_ver = await verifier.run(fixed, self.send_log, self.timer)
+        if not fixed_ver["ok"] or fixed["equation"] == sol["equation"]:
+            return flag
+        return {"decision": "corrected", "message": review["message"],
+                "corrected_equation": fixed["equation"],
+                "result": self._result_payload(M, vision, fixed, fixed_ver, rounds + 1, False)}
+
+    async def _send_results(self, M, vision, sol, ver, rounds, review_pending: bool):
+        self.timer.mark("Có phương trình")
+        # review_pending=False: client đóng kết nối ngay khi nhận message này (kèm luôn số đo thời gian)
+        await self.send_json(self._result_payload(M, vision, sol, ver, rounds, review_pending))
+
+    def _result_payload(self, M, vision, sol, ver, rounds, review_pending: bool) -> dict:
         safety = ver["safety"]
         sensory = M._detect_sound_and_olfactory(sol["reactants"], sol["products"])
-        self.timer.mark("Có phương trình")
-        # Client đóng kết nối ngay khi nhận message này, nên đây phải là message cuối (kèm luôn số đo thời gian)
-        await self.send_json({
+        return {
             "type": "result_chemistry",
+            "review_pending": review_pending,
             "equation": sol["equation"],
             "reactants": sol["reactants"],
             "products": sol["products"],
@@ -552,4 +667,4 @@ class Orchestrator:
                 "_curriculum": "high_school",
                 "_pedagogy_loading": False,
             },
-        })
+        }

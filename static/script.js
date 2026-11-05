@@ -1459,6 +1459,44 @@ function showQuotaNotice(message) {
     el._hideTimer = setTimeout(() => el.remove(), 8000);
 }
 
+// Lời nhắc của VerifierAgent trong khung phản ứng. Có thể nhắc tới sản phẩm nên ẩn tới khi bấm "Xem phản ứng".
+function showChemReviewNote(wid, title, message, corrected) {
+    const widget = document.getElementById(wid);
+    const anchor = widget?.querySelector('.cw-body');
+    if (!anchor) return;
+    widget.querySelector('.cw-review-note')?.remove();
+    const note = document.createElement('div');
+    note.className = 'cw-review-note';
+    const text = document.createElement('div');
+    text.className = 'cw-review-text';
+    const strong = document.createElement('b');
+    strong.textContent = title;
+    text.append(strong, ' ' + (message || ''));
+    note.appendChild(text);
+    if (corrected) {
+        const btn = document.createElement('button');
+        btn.className = 'cw-review-apply';
+        btn.textContent = 'Dùng phương trình này';
+        btn.addEventListener('click', () => {
+            widget.querySelector('.widget-close')?.click();
+            buildChemWidget(corrected);
+        });
+        note.appendChild(btn);
+    }
+    const revealed = document.getElementById(`cw-right-${wid}`)?.style.opacity !== '0';
+    note.classList.toggle('cw-note-hidden', !revealed);
+    widget.insertBefore(note, anchor);
+}
+
+function applyVerifierReview(wid, review) {
+    if (!wid) return;
+    if (review.decision === 'corrected') {
+        showChemReviewNote(wid, '🔎 Có thể chưa đúng:', `${review.message} Đề xuất: ${canonicalizeEquation(review.corrected_equation)}`, review.result);
+    } else if (review.decision === 'flag') {
+        showChemReviewNote(wid, '⚠️ Cần giáo viên xem lại:', review.message);
+    }
+}
+
 function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/analyze`);
@@ -1485,7 +1523,18 @@ function sendToAI(imageData, actionType = 'auto_analyze', textData = "") {
         if (data.type === 'result_chemistry') {
             setLoading(false);
             lastChemWidgetId = buildChemWidget(data);
+            if (data.review_pending) {
+                // VerifierAgent còn xem lại ở nền: giữ kết nối, nhưng lỗi kết nối lúc này không ảnh hưởng kết quả đã hiện
+                ws.onerror = null;
+                ws.onclose = null;
+                setTimeout(() => ws.close(), 25000);
+            } else {
+                ws.close();
+            }
+
+        } else if (data.type === 'result_verifier_review') {
             ws.close();
+            applyVerifierReview(lastChemWidgetId, data);
 
         } else if (data.type === 'result_chemistry_pedagogy') {
             // Legacy fallback: giữ lại phòng khi server cũ gửi 2 message
@@ -3048,6 +3097,7 @@ function buildChemWidget(data) {
         playChemAnim(wid, soundType, () => {
             const eqEl = widget.querySelector('.cw-eq-formula');
             if (eqEl) eqEl.innerHTML = renderFormulaHtml(cleanEquation);
+            widget.querySelector('.cw-review-note')?.classList.remove('cw-note-hidden');
         });
     });
 
@@ -3067,6 +3117,7 @@ function buildChemWidget(data) {
         rightEl.style.opacity = '0';
         const eqEl = widget.querySelector('.cw-eq-formula');
         if (eqEl) eqEl.innerHTML = equationPendingHtml;
+        widget.querySelector('.cw-review-note')?.classList.add('cw-note-hidden');
         arrowEl.querySelectorAll('.cw-arrow-sym, .cw-catalyst-label').forEach(el => {
             el.style.transform = '';
             el.style.color = '';
@@ -3117,6 +3168,11 @@ function buildChemWidget(data) {
             products.forEach((_, i) => stopChemAnim(`pv${i}${wid}`));
         }
     });
+
+    // Luật không chấp nhận mà hết lượt sửa: không để phương trình sai hiện ra như đã kiểm chứng
+    if (data.verification && data.verification.ok === false) {
+        showChemReviewNote(wid, '⚠️ Chưa kiểm chứng được:', (data.verification.errors || []).join(' '));
+    }
 
     // SPEED OPT: Trả về wid để sendToAI có thể patch pedagogy sau
     return wid;

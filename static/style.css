@@ -4991,3 +4991,17 @@ textarea.vr-transcript-input { resize: none; line-height: 1.4; max-height: 120px
     background: #78350f; border: 1px solid #f59e0b; color: #fef3c7; border-radius: 10px;
     padding: 10px 18px; font-weight: 600; font-size: 0.95rem; box-shadow: 0 8px 24px rgba(0,0,0,0.45);
 }
+
+/* Lời nhắc của VerifierAgent */
+.cw-review-note {
+    display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+    background: rgba(245,158,11,0.12); border-bottom: 1px solid rgba(245,158,11,0.35);
+    color: #fde68a; font-size: 0.8rem; line-height: 1.4;
+}
+.cw-review-note.cw-note-hidden { display: none; }
+.cw-review-text { flex: 1; min-width: 0; }
+.cw-review-apply {
+    flex-shrink: 0; cursor: pointer; border-radius: 8px; padding: 6px 10px; font-weight: 600; font-size: 0.75rem;
+    background: rgba(245,158,11,0.2); color: #fef3c7; border: 1px solid #f59e0b;
+}
+.cw-review-apply:hover { background: rgba(245,158,11,0.35); }
